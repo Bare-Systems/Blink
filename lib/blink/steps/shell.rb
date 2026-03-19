@@ -5,7 +5,14 @@ module Blink
     # Run an arbitrary command on the target.
     # Config: { "command" => "..." }
     class Shell < Base
-      def call(ctx)
+      step_definition(
+        description: "Run an arbitrary shell command on the target.",
+        required_keys: ["command"],
+        supported_target_types: %w[local ssh],
+        rollback_strategy: "same"
+      )
+
+      def execute(ctx)
         cmd = @config["command"] || raise(Manifest::Error, "shell step requires 'command'")
         cmd = ctx.resolve(cmd)
 

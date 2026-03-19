@@ -5,7 +5,14 @@ module Blink
     # Stop the running service. Uses service_config["stop"]["command"].
     # Failures are non-fatal by default (service may already be stopped).
     class Stop < Base
-      def call(ctx)
+      step_definition(
+        description: "Stop the running service with a configured command.",
+        required_keys: ["command"],
+        supported_target_types: %w[local ssh],
+        rollback_strategy: "same"
+      )
+
+      def execute(ctx)
         cfg = ctx.section("stop").merge(@config)
         cmd = cfg["command"] || raise(Manifest::Error, "No stop.command configured for '#{ctx.service_name}'")
         cmd = ctx.resolve(cmd)

@@ -1,6 +1,19 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+required = Gem::Version.new("3.1")
+current = Gem::Version.new(RUBY_VERSION)
+
+if current < required
+  preferred = "/opt/homebrew/opt/ruby/bin/ruby"
+
+  if File.executable?(preferred)
+    exec preferred, File.expand_path(__FILE__), *ARGV
+  end
+
+  abort "Blink requires Ruby >= #{required}. Found #{RUBY_VERSION}. Install a newer Ruby or run with /opt/homebrew/opt/ruby/bin/ruby."
+end
+
 $LOAD_PATH.unshift File.join(__dir__, "..", "lib")
 require "blink"
 

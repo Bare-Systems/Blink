@@ -29,7 +29,14 @@ module Blink
     # When both suite and tests are declared, inline tests run first, then
     # the Ruby suite. A failure in either causes the step to raise.
     class Verify < Base
-      def call(ctx)
+      step_definition(
+        description: "Run inline and/or Ruby verification suites for the service.",
+        config_section: "verify",
+        supported_target_types: %w[local ssh],
+        rollback_strategy: "same"
+      )
+
+      def execute(ctx)
         cfg  = ctx.section("verify").merge(@config)
         tags = Array(cfg["tags"] || []).map(&:to_sym)
 
@@ -65,6 +72,26 @@ module Blink
         end
 
         raise "Verification failed: #{total_failed} test(s) failed" if total_failed > 0
+      end
+
+      def self.validate_config(config, service_config:, service_name:, path:)
+        issues = []
+        has_suite = config["suite"]
+        has_tests = config["tests"]
+
+        unless has_suite || has_tests
+          issues << {
+            path: path,
+            message: "verify requires either suite = \"path/to/suite.rb\" or verify.tests.* entries.",
+            severity: "error"
+          }
+        end
+
+        if config["tags"] && !(config["tags"].is_a?(Array) && config["tags"].all? { |tag| tag.is_a?(String) && !tag.strip.empty? })
+          issues << { path: "#{path}.tags", message: "verify.tags must be an array of strings.", severity: "error" }
+        end
+
+        issues
       end
     end
 

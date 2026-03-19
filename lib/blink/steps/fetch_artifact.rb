@@ -5,10 +5,22 @@ module Blink
     # Download the service artifact from its declared source.
     # Sets ctx.artifact_path for use by subsequent steps (install, etc.).
     class FetchArtifact < Base
-      def call(ctx)
+      step_definition(
+        description: "Fetch a deployable artifact from the configured source.",
+        config_section: "source",
+        supported_target_types: %w[local ssh],
+        rollback_strategy: "none",
+        mutates_context: %w[artifact_path]
+      )
+
+      def execute(ctx)
         source_cfg = ctx.service_config["source"] ||
           raise(Manifest::Error, "No [services.#{ctx.service_name}.source] defined in manifest")
-        source_cfg = source_cfg.merge("_manifest_dir" => ctx.manifest.dir)
+        source_cfg = source_cfg.merge(
+          "_manifest_dir" => ctx.manifest.dir,
+          "_cache_dir" => File.join(ctx.manifest.dir, ".blink", "artifacts"),
+          "_service_name" => ctx.service_name
+        )
 
         if dry_run?(ctx)
           source_ref = source_cfg["repo"] || source_cfg["command"] || source_cfg["artifact"]

@@ -1,11 +1,14 @@
 # frozen_string_literal: true
 
+require "json"
+
 module Blink
   module Commands
     class Logs
       def initialize(argv)
         @argv    = argv.dup
         @follow  = !!@argv.delete("-f") || !!@argv.delete("--follow")
+        @json    = !!@argv.delete("--json")
         @lines   = extract_flag_value("--lines") || "100"
         @service = @argv.reject { _1.start_with?("-") }.first
 
@@ -23,34 +26,57 @@ module Blink
         end
 
         manifest = Manifest.load
-        svc      = manifest.service!(@service)
-
-        target_name = @target_name || svc.dig("deploy", "target") || manifest.default_target_name
-        target      = manifest.target!(target_name)
-
-        cmd = log_command(svc, @service, @lines, @follow)
-        target.run(cmd)
+        operation = Operations::Logs.new(
+          manifest: manifest,
+          service_name: @service,
+          lines: @lines,
+          target_name: @target_name
+        )
+        if @json
+          if @follow
+            puts Response.dump(
+              success: false,
+              summary: "`blink logs --json` does not support follow mode",
+              details: { service: @service, target: operation.target.description },
+              next_steps: ["Drop `--follow` or rerun without `--json` for streaming output."]
+            )
+            exit 1
+          end
+          details = operation.call
+          puts Response.dump(
+            success: true,
+            summary: "Last #{@lines} lines of #{@service} logs",
+            details: details,
+            next_steps: ["Inspect the log output for errors or warnings."]
+          )
+        else
+          operation.target.run(operation.stream_command(follow: @follow))
+        end
       rescue Manifest::Error => e
+        if @json
+          puts Response.dump(
+            success: false,
+            summary: e.message,
+            details: { service: @service, error: e.message },
+            next_steps: ["Fix the manifest or target selection and rerun `blink logs`."]
+          )
+          exit 1
+        end
         Output.fatal(e.message)
       rescue SSHError => e
+        if @json
+          puts Response.dump(
+            success: false,
+            summary: "SSH error: #{e.message}",
+            details: { service: @service, error: e.message },
+            next_steps: ["Check connectivity with `blink doctor` and retry."]
+          )
+          exit 1
+        end
         Output.fatal("SSH error: #{e.message}")
       end
 
       private
-
-      def log_command(svc, service_name, lines, follow)
-        logs_cfg = svc["logs"] || {}
-
-        if logs_cfg["command"]
-          logs_cfg["command"]
-        elsif (container = logs_cfg["container"] || svc.dig("docker", "container") || service_name)
-          follow_flag = follow ? " -f" : ""
-          "docker logs --tail #{lines}#{follow_flag} #{container}"
-        else
-          "journalctl -u #{service_name} -n #{lines}#{follow ? " -f" : ""}"
-        end
-      end
-
       def extract_flag_value(flag)
         idx = @argv.index(flag)
         return nil unless idx
@@ -59,7 +85,7 @@ module Blink
       end
 
       def show_help
-        puts "#{Output::BOLD}Usage:#{Output::RESET}  blink logs <service> [-f] [--lines N] [--target NAME]"
+        puts "#{Output::BOLD}Usage:#{Output::RESET}  blink logs <service> [-f] [--lines N] [--target NAME] [--json]"
       end
     end
   end

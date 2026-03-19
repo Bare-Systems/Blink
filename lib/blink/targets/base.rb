@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "shellwords"
+
 module Blink
   module Targets
     class Base
@@ -45,9 +47,24 @@ module Blink
         "#{config["type"]}:#{name}"
       end
 
+      def environment
+        value = config["env"]
+        return {} unless value.is_a?(Hash)
+
+        value.transform_keys(&:to_s).transform_values(&:to_s)
+      end
+
       # Base directory on the target where services are installed.
       def base
         config["base"] || "/tmp"
+      end
+
+      protected
+
+      def remote_env_prefix
+        return nil if environment.empty?
+
+        "env #{environment.map { |key, value| "#{Shellwords.escape(key)}=#{Shellwords.escape(value)}" }.join(" ")}"
       end
     end
   end

@@ -3,26 +3,40 @@
 module Blink
   class CLI
     COMMANDS = {
+      "init"    => Commands::Init,
       "deploy"  => Commands::Deploy,
       "plan"    => Commands::Plan,
       "test"    => Commands::Test,
+      "validate"=> Commands::Validate,
       "status"  => Commands::Status,
       "doctor"  => Commands::Doctor,
       "logs"    => Commands::Logs,
       "restart" => Commands::Restart,
+      "rollback"=> Commands::Rollback,
+      "steps"   => Commands::Steps,
+      "report"  => Commands::Report,
       "ps"      => Commands::Ps,
+      "state"   => Commands::State,
+      "history" => Commands::History,
       "ssh"     => Commands::SshCmd,
     }.freeze
 
     DESCRIPTIONS = {
+      "init    [--output PATH]"    => "Scaffold a blink.toml manifest in the current workspace",
       "deploy  <service>"          => "Deploy a service using its declared pipeline",
       "plan    <service>"          => "Show what deploy would do without executing (dry-run)",
       "test    [service] [@tag]"   => "Run verification suites against a target",
+      "validate [path]"            => "Validate blink.toml and print schema errors",
       "status  [service]"          => "Show service health and container state",
       "doctor  [--target NAME]"    => "Run connectivity and health checks",
       "logs    <service> [-f]"     => "Tail service logs",
       "restart <service>"          => "Stop then start a service",
+      "rollback <service>"         => "Run the declared rollback pipeline",
+      "steps   [name]"             => "List built-in step definitions",
+      "report  generate"           => "Generate static reports from .blink history",
       "ps      [--target NAME]"    => "Show running Docker containers",
+      "state   [service]"          => "Show persisted .blink state",
+      "history [service]"          => "Show recent .blink runs",
       "ssh     [--target NAME]"    => "Open an interactive SSH session",
     }.freeze
 

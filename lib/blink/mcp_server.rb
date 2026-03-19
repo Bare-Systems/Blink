@@ -46,7 +46,7 @@ module Blink
       {
         name: "blink_deploy",
         description: "Deploy a service using its declared pipeline (fetch → stop → backup → install → start → health_check → verify). " \
-                     "Automatically rolls back on failure. Returns per-step results. Writes a blink.lock entry on completion.",
+                     "Automatically rolls back on failure. Returns per-step results and records a .blink history entry.",
         inputSchema: {
           type: "object",
           properties: {
@@ -96,6 +96,77 @@ module Blink
             service: { type: "string",  description: "Service name" },
             lines:   { type: "integer", description: "Number of lines to return (default: 100)" },
             target:  { type: "string",  description: "Override the target" },
+          },
+          required: ["service"]
+        }
+      },
+      {
+        name: "blink_restart",
+        description: "Restart a service using its configured stop/start or restart command.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            service: { type: "string", description: "Service name" },
+            target:  { type: "string", description: "Override the target" },
+          },
+          required: ["service"]
+        }
+      },
+      {
+        name: "blink_ps",
+        description: "Show running Docker containers on a target.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            target:  { type: "string", description: "Override the target" },
+          },
+          required: []
+        }
+      },
+      {
+        name: "blink_steps",
+        description: "List Blink's built-in step definitions and capability metadata.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            step: { type: "string", description: "Specific step name to inspect" },
+          },
+          required: []
+        }
+      },
+      {
+        name: "blink_state",
+        description: "Read the current persisted .blink state for one or all services.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            service: { type: "string", description: "Service name; omit for all services" },
+          },
+          required: []
+        }
+      },
+      {
+        name: "blink_history",
+        description: "Read recent persisted .blink runs, or inspect a single run by run_id.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            service: { type: "string", description: "Service name; omit for all services" },
+            limit: { type: "integer", description: "Maximum number of runs to return" },
+            run_id: { type: "string", description: "Specific run id to inspect" },
+          },
+          required: []
+        }
+      },
+      {
+        name: "blink_rollback",
+        description: "Execute a service rollback pipeline and persist the result to .blink history.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            service: { type: "string", description: "Service name" },
+            target:  { type: "string", description: "Override the target" },
+            dry_run: { type: "boolean", description: "Preview rollback without executing it" },
           },
           required: ["service"]
         }
@@ -197,6 +268,12 @@ module Blink
       when "blink_test"          then tool_test(args)
       when "blink_status"        then tool_status(args)
       when "blink_logs"          then tool_logs(args)
+      when "blink_restart"       then tool_restart(args)
+      when "blink_ps"            then tool_ps(args)
+      when "blink_steps"         then tool_steps(args)
+      when "blink_state"         then tool_state(args)
+      when "blink_history"       then tool_history(args)
+      when "blink_rollback"      then tool_rollback(args)
       when "blink_doctor"        then tool_doctor(args)
       else raise "Unknown tool '#{name}'. Available: #{TOOLS.map { _1[:name] }.join(", ")}"
       end
@@ -205,30 +282,13 @@ module Blink
     # ── Tool implementations ─────────────────────────────────────────────────
 
     def tool_list_services(_args)
-      manifests = Manifest.discover_all(start_dir: Dir.pwd)
-      raise Manifest::Error, "No blink.toml found in or below #{Dir.pwd}" if manifests.empty?
-
-      services = manifests.flat_map do |manifest|
-        manifest.service_names.map do |name|
-          svc      = manifest.service(name)
-          t_name   = svc.dig("deploy", "target") || manifest.default_target_name
-          pipeline = svc.dig("deploy", "pipeline") || Runner::DEFAULT_PIPELINES["deploy"]
-          {
-            name:        name,
-            description: svc["description"],
-            target:      t_name,
-            source:      svc.dig("source", "type"),
-            pipeline:    pipeline,
-            manifest:    manifest.path,
-          }
-        end
-      end
+      details = Operations::ListServices.new(start_dir: Dir.pwd).call
 
       JSON.generate({
         success:             true,
-        summary:             "#{services.size} service(s) across #{manifests.size} manifest(s)",
+        summary:             "#{details[:services].size} service(s) across #{details[:manifests].size} manifest(s)",
         suggested_next_step: "Use blink_plan or blink_deploy to operate on a specific service.",
-        data:                { services: services, manifests: manifests.map(&:path) }
+        data:                details
       })
     end
 
@@ -236,36 +296,15 @@ module Blink
       service    = require_arg!(args, "service")
       build_name = args["build"]
       manifest   = manifest_for_service(service)
-
-      registry = Registry.new(manifest)
-      svc      = manifest.service!(service)
-      target   = registry.target_for(service, override: args["target"])
-      pipeline = registry.pipeline_for(service)
-      rollback = registry.rollback_for(service)
-
-      steps = pipeline.map do |step_name|
-        cfg  = svc[step_name] || {}
-        note = plan_note(step_name, cfg)
-        { step: step_name, config: cfg, note: note }
-      end
+      plan = Planner.new(manifest).build(service, target_name: args["target"], build_name: build_name)
 
       deploy_cmd = "blink_deploy with service='#{service}'#{build_name ? ", build='#{build_name}'" : ""}"
 
       JSON.generate({
-        success:             true,
-        summary:             "Deploy #{service} via #{pipeline.size}-step pipeline on #{target.description}",
+        success:             plan.executable?,
+        summary:             "Deploy #{service} via #{plan.pipeline.size}-step pipeline on #{plan.target["description"]}",
         suggested_next_step: "Run #{deploy_cmd} to execute this plan.",
-        data: {
-          service:     service,
-          build_name:  build_name,
-          target:      target.description,
-          description: svc["description"],
-          source:      svc["source"],
-          manifest:    manifest.path,
-          pipeline:    pipeline,
-          rollback:    rollback,
-          steps:       steps,
-        }
+        data:                plan.to_h
       })
     end
 
@@ -310,9 +349,14 @@ module Blink
       list_only = args.fetch("list", false)
 
       manifest = service ? manifest_for_service(service) : Manifest.load(start_dir: Dir.pwd)
-      suites   = load_suites(manifest, service)
+      operation = Operations::TestRun.new(
+        manifest: manifest,
+        service_name: service,
+        tags: tags,
+        target_name: args["target"]
+      )
 
-      if suites.empty?
+      unless operation.available?
         return JSON.generate({
           success:             false,
           summary:             "No suites found#{service ? " for '#{service}'" : ""}",
@@ -321,22 +365,18 @@ module Blink
         })
       end
 
-      target = resolve_target(manifest, service, args["target"])
-      runner = Testing::Runner.new(tags: tags, target: target, json_mode: false)
-      suites.each { |klass| klass.register(runner) }
-
       if list_only
-        filtered = runner.instance_variable_get(:@tests) # peek at registered tests
-        test_list = filtered.map { |t| { name: t.name, suite: t.suite, tags: t.tags, desc: t.desc } }
+        details = operation.list
         return JSON.generate({
           success:             true,
-          summary:             "#{test_list.size} test(s) available",
+          summary:             "#{details[:tests].size} test(s) available",
           suggested_next_step: "Run blink_test without list=true to execute these tests.",
-          data:                { tests: test_list, manifest: manifest.path }
+          data:                details.merge(manifest: manifest.path)
         })
       end
 
-      result = runner.run_collected
+      run = operation.run
+      result = run[:result]
 
       next_step = if result.success?
         "All tests passed. Deployment is verified."
@@ -349,59 +389,39 @@ module Blink
         success:             result.success?,
         summary:             "#{result.passed}/#{result.total} passed#{result.failed > 0 ? ", #{result.failed} failed" : ""}",
         suggested_next_step: next_step,
-        data:                result.to_h.merge(manifest: manifest.path)
+        data:                result.to_h.merge(manifest: manifest.path, target: run[:target], service: service)
       })
     end
 
     def tool_status(args)
       manifest = args["service"] ? manifest_for_service(args["service"]) : Manifest.load(start_dir: Dir.pwd)
+      result = Operations::Status.new(
+        manifest: manifest,
+        service_name: args["service"],
+        target_name: args["target"]
+      ).call
 
-      service_names = args["service"] ? [args["service"]] : manifest.service_names
-      target_name   = args["target"] || manifest.default_target_name
-      target        = manifest.target!(target_name)
-
-      unless target.reachable?
+      unless result[:reachable]
         return JSON.generate({
           success:             false,
-          summary:             "Target '#{target_name}' (#{target.description}) is unreachable",
+          summary:             "Target '#{result[:target_name]}' (#{result[:target]}) is unreachable",
           suggested_next_step: "Check SSH connectivity with blink_doctor.",
-          data:                { target: target.description, services: [] }
+          data:                { target: result[:target], services: [] }
         })
       end
 
-      services = service_names.map do |name|
-        svc    = manifest.service!(name)
-        hc_cfg = svc&.dig("health_check")
-        if hc_cfg&.dig("url")
-          url  = hc_cfg["url"]
-          code = target.capture(
-            "curl -sfk --max-time 5 --output /dev/null --write-out '%{http_code}' #{url} 2>/dev/null || echo 000"
-          ).to_i
-          healthy = (200..299).cover?(code)
-          { name: name, healthy: healthy, http_code: code, url: url }
-        else
-          { name: name, healthy: nil, note: "no health_check.url configured" }
-        end
-      rescue => e
-        { name: name, healthy: false, error: e.message }
-      end
-
-      up    = services.count { _1[:healthy] == true }
-      down  = services.count { _1[:healthy] == false }
-      total = services.size
-
-      next_step = if down > 0
-        down_names = services.select { _1[:healthy] == false }.map { _1[:name] }
-        "#{down} service(s) are down: #{down_names.join(", ")}. Use blink_logs or blink_deploy to investigate."
+      next_step = if result[:down] > 0
+        down_names = result[:services].select { _1[:healthy] == false }.map { _1[:name] }
+        "#{result[:down]} service(s) are down: #{down_names.join(", ")}. Use blink_logs or blink_deploy to investigate."
       else
-        "All #{up} service(s) are healthy."
+        "All #{result[:healthy]} service(s) are healthy."
       end
 
       JSON.generate({
-        success:             down == 0,
-        summary:             "#{up}/#{total} service(s) healthy on #{target.description}",
+        success:             result[:down] == 0,
+        summary:             "#{result[:healthy]}/#{result[:total]} service(s) healthy on #{result[:target]}",
         suggested_next_step: next_step,
-        data:                { target: target.description, services: services, manifest: manifest.path }
+        data:                { target: result[:target], services: result[:services], manifest: manifest.path }
       })
     end
 
@@ -409,26 +429,19 @@ module Blink
       service = require_arg!(args, "service")
       lines   = (args["lines"] || 100).to_i
 
-      manifest    = manifest_for_service(service)
-      svc         = manifest.service!(service)
-      target_name = args["target"] || svc.dig("deploy", "target") || manifest.default_target_name
-      target      = manifest.target!(target_name)
-
-      logs_cfg    = svc["logs"] || {}
-      container   = logs_cfg["container"] || svc.dig("docker", "container") || service
-      cmd = if logs_cfg["command"]
-        logs_cfg["command"]
-      else
-        "docker logs --tail #{lines} #{container} 2>&1 || journalctl -u #{service} -n #{lines} --no-pager 2>&1"
-      end
-
-      output = target.capture(cmd)
+      manifest = manifest_for_service(service)
+      details = Operations::Logs.new(
+        manifest: manifest,
+        service_name: service,
+        lines: lines,
+        target_name: args["target"]
+      ).call
 
       JSON.generate({
         success:             true,
         summary:             "Last #{lines} lines of #{service} logs",
         suggested_next_step: "Look for ERROR or WARN lines. Use blink_deploy to redeploy if broken.",
-        data:                { service: service, target: target.description, lines: output, manifest: manifest.path }
+        data:                details.merge(manifest: manifest.path)
       })
     rescue => e
       JSON.generate({
@@ -439,90 +452,159 @@ module Blink
       })
     end
 
-    def tool_doctor(args)
-      manifest = Manifest.load
-      targets  = args["target"] ? [manifest.target!(args["target"])] : manifest.target_names.map { manifest.target!(_1) }
+    def tool_restart(args)
+      service = require_arg!(args, "service")
+      manifest = manifest_for_service(service)
+      details = Operations::Restart.new(
+        manifest: manifest,
+        service_name: service,
+        target_name: args["target"]
+      ).call
 
-      all_checks = []
+      JSON.generate({
+        success:             true,
+        summary:             "#{service} restarted",
+        suggested_next_step: "Run blink_status with service='#{service}' to confirm it is healthy.",
+        data:                details.merge(manifest: manifest.path)
+      })
+    rescue => e
+      JSON.generate({
+        success:             false,
+        summary:             "Could not restart #{service}: #{e.message}",
+        suggested_next_step: "Check the service configuration and target connectivity, then retry.",
+        data:                {}
+      })
+    end
 
-      targets.each do |target|
-        checks = []
+    def tool_ps(args)
+      manifest = Manifest.load(start_dir: Dir.pwd)
+      details = Operations::Ps.new(manifest: manifest, target_name: args["target"]).call
 
-        reachable = target.reachable?
-        checks << { target: target.name, check: "connectivity", status: reachable ? "pass" : "fail",
-                    detail: target.description }
+      JSON.generate({
+        success:             true,
+        summary:             "#{details[:container_count]} container(s) listed on #{details[:target]}",
+        suggested_next_step: "Inspect the container list for unhealthy or missing services.",
+        data:                details
+      })
+    rescue => e
+      JSON.generate({
+        success:             false,
+        summary:             "Could not list containers: #{e.message}",
+        suggested_next_step: "Check the target with blink_doctor and verify Docker is available.",
+        data:                {}
+      })
+    end
 
-        if reachable && target.is_a?(Targets::SSHTarget)
-          # Docker
-          docker_ok = begin
-            target.capture("docker info > /dev/null 2>&1 && echo ok || echo fail") == "ok"
-          rescue SSHError
-            false
-          end
-          checks << { target: target.name, check: "docker daemon", status: docker_ok ? "pass" : "fail" }
+    def tool_steps(args)
+      details = Operations::StepCatalog.new(step_name: args["step"]).call
 
-          # Disk
-          begin
-            out  = target.capture("df -h / | awk 'NR==2 {print $5, $4}'")
-            pct  = out.split.first.to_i
-            ok   = pct < 80
-            checks << { target: target.name, check: "disk /", status: ok ? "pass" : "warn",
-                        detail: "#{100 - pct}% free" }
-          rescue SSHError => e
-            checks << { target: target.name, check: "disk /", status: "error", detail: e.message }
-          end
+      JSON.generate({
+        success:             true,
+        summary:             args["step"] ? "Step definition loaded for #{args["step"]}" : "#{details[:steps].size} step definition(s) loaded",
+        suggested_next_step: args["step"] ? "Use this step in a pipeline or rollback_pipeline in blink.toml." :
+                                            "Use blink_steps with step='<name>' to inspect a specific step.",
+        data:                details
+      })
+    rescue => e
+      JSON.generate({
+        success:             false,
+        summary:             "Could not inspect steps: #{e.message}",
+        suggested_next_step: "Call blink_steps without arguments to list the available built-in steps.",
+        data:                {}
+      })
+    end
 
-          # Memory
-          begin
-            out  = target.capture("free -m | awk 'NR==2 {printf \"%d %d\", $3, $2}'")
-            used, total = out.split.map(&:to_i)
-            pct  = total > 0 ? (used * 100 / total) : 0
-            ok   = pct < 85
-            checks << { target: target.name, check: "memory", status: ok ? "pass" : "warn",
-                        detail: "#{used}MB / #{total}MB (#{pct}%)" }
-          rescue SSHError => e
-            checks << { target: target.name, check: "memory", status: "error", detail: e.message }
-          end
-        end
+    def tool_state(args)
+      manifest = args["service"] ? manifest_for_service(args["service"]) : Manifest.load(start_dir: Dir.pwd)
+      details = Operations::State.new(manifest: manifest, service_name: args["service"]).call
 
-        # Service health checks
-        manifest.service_names.each do |name|
-          svc    = manifest.service(name)
-          url    = svc&.dig("health_check", "url")
-          next unless url
+      JSON.generate({
+        success:             true,
+        summary:             args["service"] ? "State loaded for #{args["service"]}" : "#{details[:services].size} service state record(s) loaded",
+        suggested_next_step: "Use blink_history to inspect recent runs behind this state.",
+        data:                details
+      })
+    rescue => e
+      JSON.generate({
+        success:             false,
+        summary:             "Could not read state: #{e.message}",
+        suggested_next_step: "Run blink_deploy or blink_test first so Blink has persisted state to inspect.",
+        data:                {}
+      })
+    end
 
-          ok = begin
-            code = target.capture(
-              "curl -sfk --max-time 5 --output /dev/null --write-out '%{http_code}' #{url} 2>/dev/null || echo 000"
-            ).to_i
-            (200..299).cover?(code)
-          rescue
-            false
-          end
-          checks << { target: target.name, check: "#{name} health", status: ok ? "pass" : "fail", detail: url }
-        end
+    def tool_history(args)
+      manifest = args["service"] ? manifest_for_service(args["service"]) : Manifest.load(start_dir: Dir.pwd)
+      details = Operations::History.new(
+        manifest: manifest,
+        service_name: args["service"],
+        limit: args["limit"] || 20,
+        run_id: args["run_id"]
+      ).call
 
-        all_checks.concat(checks)
-      end
+      JSON.generate({
+        success:             true,
+        summary:             args["run_id"] ? "History loaded for run #{args["run_id"]}" : "#{details[:count]} run(s) loaded",
+        suggested_next_step: args["run_id"] ? "Use blink_state to compare this run with current persisted state." :
+                                              "Use blink_history with run_id to inspect a specific run in detail.",
+        data:                details
+      })
+    rescue => e
+      JSON.generate({
+        success:             false,
+        summary:             "Could not read history: #{e.message}",
+        suggested_next_step: "Run blink_deploy or blink_test first so Blink has persisted runs to inspect.",
+        data:                {}
+      })
+    end
 
-      passed = all_checks.count { _1[:status] == "pass" }
-      failed = all_checks.count { _1[:status] == "fail" }
-      warned = all_checks.count { _1[:status] == "warn" }
-
-      next_step = if failed > 0
-        failing = all_checks.select { _1[:status] == "fail" }.map { _1[:check] }
-        "Fix failing checks: #{failing.join(", ")}."
-      elsif warned > 0
-        "All checks pass with #{warned} warning(s). Monitor disk/memory usage."
-      else
-        "All #{passed} checks passed. System looks healthy."
+    def tool_rollback(args)
+      service = require_arg!(args, "service")
+      manifest = manifest_for_service(service)
+      output, result = capture_output do
+        Operations::Rollback.new(
+          manifest: manifest,
+          service_name: service,
+          target_name: args["target"],
+          dry_run: args.fetch("dry_run", false),
+          json_mode: false
+        ).call
       end
 
       JSON.generate({
-        success:             failed == 0,
-        summary:             "#{passed} passed, #{failed} failed, #{warned} warnings",
+        success:             result.success?,
+        summary:             result.summary,
+        suggested_next_step: result.success? ? "Run blink_status with service='#{service}' to confirm recovery." :
+                                              "Inspect the failed rollback step and review blink_history for the recorded run.",
+        data:                result.to_h.merge(output: output, manifest: manifest.path)
+      })
+    rescue => e
+      JSON.generate({
+        success:             false,
+        summary:             "Could not rollback #{service}: #{e.message}",
+        suggested_next_step: "Define a rollback pipeline and verify target connectivity, then retry.",
+        data:                {}
+      })
+    end
+
+    def tool_doctor(args)
+      manifest = Manifest.load
+      result = Operations::Doctor.new(manifest: manifest, target_name: args["target"]).call
+
+      next_step = if result[:failed] > 0
+        failing = result[:checks].select { _1[:status] == "fail" }.map { _1[:check] }
+        "Fix failing checks: #{failing.join(", ")}."
+      elsif result[:warnings] > 0
+        "All checks pass with #{result[:warnings]} warning(s). Monitor disk/memory usage."
+      else
+        "All #{result[:passed]} checks passed. System looks healthy."
+      end
+
+      JSON.generate({
+        success:             result[:failed] == 0,
+        summary:             "#{result[:passed]} passed, #{result[:failed]} failed, #{result[:warnings]} warnings",
         suggested_next_step: next_step,
-        data:                { checks: all_checks }
+        data:                result
       })
     end
 
@@ -551,45 +633,6 @@ module Blink
     rescue => e
       $stdout = old_stdout if old_stdout
       raise e
-    end
-
-    def load_suites(manifest, service_name)
-      if service_name
-        svc        = manifest.service!(service_name)
-        suite_path = svc&.dig("verify", "suite")
-        return [] unless suite_path
-        suite_abs = File.expand_path(suite_path, manifest.dir)
-        return [] unless File.exist?(suite_abs)
-        paths = [suite_abs]
-      else
-        paths = manifest.service_names.filter_map do |name|
-          path = manifest.service(name)&.dig("verify", "suite")
-          next unless path
-          abs = File.expand_path(path, manifest.dir)
-          abs if File.exist?(abs)
-        end
-      end
-
-      Testing::Suite.with_clean_registry { paths.each { |p| load p } }
-      Testing::Suite.registered
-    end
-
-    def resolve_target(manifest, service_name, override)
-      name = override ||
-             (service_name && manifest.service(service_name)&.dig("deploy", "target")) ||
-             manifest.default_target_name
-      manifest.target!(name)
-    end
-
-    def plan_note(step_name, cfg)
-      case step_name
-      when "stop", "start", "shell" then cfg["command"].to_s
-      when "remote_script"          then cfg["path"].to_s
-      when "install"                then "→ #{cfg["dest"]}" if cfg["dest"]
-      when "health_check"           then cfg["url"].to_s
-      when "verify"                 then "suite: #{cfg["suite"]}  tags: #{Array(cfg["tags"]).join(", ")}"
-      else ""
-      end.to_s
     end
 
     def ok_response(id, result)

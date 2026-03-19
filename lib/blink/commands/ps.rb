@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "json"
+
 module Blink
   module Commands
     class Ps
@@ -16,20 +18,21 @@ module Blink
 
       def run
         manifest    = Manifest.load
-        target_name = @target_name || manifest.default_target_name
-        target      = manifest.target!(target_name)
+        details = Operations::Ps.new(manifest: manifest, target_name: @target_name).call
 
-        Output.header("Containers  (#{target.description})")
-
-        raw = target.capture('docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}\t{{.Image}}" 2>&1')
+        Output.header("Containers  (#{details[:target]})") unless @json
 
         if @json
-          lines = raw.lines.map(&:chomp)
-          puts JSON.generate(target: target.description, output: lines)
+          puts Response.dump(
+            success: true,
+            summary: "#{details[:container_count]} container(s) listed on #{details[:target]}",
+            details: details,
+            next_steps: []
+          )
           return
         end
 
-        lines = raw.lines
+        lines = details[:output]
         if lines.size <= 1
           Output.warn("No containers running")
           return
@@ -37,7 +40,6 @@ module Blink
 
         puts
         lines.each_with_index do |line, i|
-          line = line.chomp
           if i == 0
             puts "  #{Output::BOLD}#{line}#{Output::RESET}"
           elsif line.include?("Up")
@@ -48,8 +50,26 @@ module Blink
         end
         puts
       rescue Manifest::Error => e
+        if @json
+          puts Response.dump(
+            success: false,
+            summary: e.message,
+            details: { target: @target_name, error: e.message },
+            next_steps: ["Fix the manifest or target selection and rerun `blink ps`."]
+          )
+          exit 1
+        end
         Output.fatal(e.message)
       rescue SSHError => e
+        if @json
+          puts Response.dump(
+            success: false,
+            summary: "SSH error: #{e.message}",
+            details: { target: @target_name, error: e.message },
+            next_steps: ["Check target connectivity with `blink doctor` and retry."]
+          )
+          exit 1
+        end
         Output.fatal("SSH error: #{e.message}")
       end
     end

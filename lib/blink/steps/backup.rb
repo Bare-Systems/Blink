@@ -6,7 +6,15 @@ module Blink
     # Sets ctx.backup_path; the rollback step restores from there.
     # Skips silently if no install.dest is configured.
     class Backup < Base
-      def call(ctx)
+      step_definition(
+        description: "Copy the currently installed artifact aside before mutation.",
+        config_section: "backup",
+        supported_target_types: %w[local ssh],
+        rollback_strategy: "none",
+        mutates_context: %w[backup_path]
+      )
+
+      def execute(ctx)
         install_cfg = ctx.section("install").merge(@config)
         dest_rel    = install_cfg["dest"]
 

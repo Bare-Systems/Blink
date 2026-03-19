@@ -26,7 +26,13 @@ module Blink
     #               exist on the remote (safe to re-deploy, never overwrites)
     #   script    — inline shell fragment run after dirs and env_file
     class Provision < Base
-      def call(ctx)
+      step_definition(
+        description: "Prepare directories, env files, and inline setup on the target.",
+        supported_target_types: %w[local ssh],
+        rollback_strategy: "same"
+      )
+
+      def execute(ctx)
         cfg      = ctx.section("provision").merge(@config)
         dirs     = Array(cfg["dirs"] || []).map { |d| ctx.resolve(d) }
         env_file = cfg["env_file"]
@@ -55,7 +61,7 @@ module Blink
           path = ctx.resolve(env_file["path"] || raise(Manifest::Error, "provision.env_file.path is required"))
           seed = env_file["seed"] || {}
           unless seed.empty?
-            lines   = seed.map { |k, v| "#{k}=#{v}" }.join("\n") + "\n"
+            lines   = seed.map { |k, v| "#{k}=#{expand_env_refs(v.to_s)}" }.join("\n") + "\n"
             escaped_path    = Shellwords.escape(path)
             escaped_content = Shellwords.escape(lines)
             # Use `test -f` so we never clobber a file that already has real secrets.
@@ -68,6 +74,21 @@ module Blink
         if script
           ctx.target.script(ctx.resolve(script))
           Output.info("Provision script executed")
+        end
+      end
+
+      private
+
+      # Expand ${VAR} references in seed values using the current environment.
+      # Raises if a referenced variable is not set, so misconfigured deploys
+      # fail loudly rather than writing literal "${VAR}" into the env file.
+      def expand_env_refs(value)
+        value.gsub(/\$\{([^}]+)\}/) do
+          var = $1
+          ENV.fetch(var) do
+            raise Manifest::Error,
+              "blink.toml seed references ${#{var}} but it is not set in the environment or .env file"
+          end
         end
       end
     end

@@ -5,7 +5,14 @@ module Blink
     # Restore the service binary from the backup created by the backup step.
     # Requires ctx.backup_path to have been set.
     class Rollback < Base
-      def call(ctx)
+      step_definition(
+        description: "Restore a previously backed up artifact onto the target.",
+        config_section: "rollback",
+        supported_target_types: %w[local ssh],
+        rollback_strategy: "same"
+      )
+
+      def execute(ctx)
         unless ctx.backup_path
           Output.warn("No backup_path in context — cannot rollback")
           return

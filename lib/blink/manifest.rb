@@ -5,6 +5,7 @@ require "find"
 module Blink
   class Manifest
     Error = Class.new(StandardError)
+    ValidationError = Class.new(Error)
 
     USER_CONFIG_PATH = File.join(Dir.home, ".config", "blink", "blink.toml")
     SEARCH_SKIP_DIRS = %w[
@@ -24,11 +25,15 @@ module Blink
     # Load a manifest from an explicit path, BLINK_MANIFEST env var, or the
     # default search path (blink.toml from CWD upward, then ~/.config/blink/blink.toml).
     def self.load(path = nil, start_dir: Dir.pwd)
+      new(resolve_path(path, start_dir: start_dir))
+    end
+
+    def self.resolve_path(path = nil, start_dir: Dir.pwd)
       candidates = [path, ENV["BLINK_MANIFEST"], *project_search_paths(start_dir), USER_CONFIG_PATH].compact.uniq
       found      = candidates.find { |p| File.exist?(p) }
       raise Error, "No blink.toml found. Searched:\n  #{candidates.join("\n  ")}" unless found
 
-      new(found)
+      File.expand_path(found)
     end
 
     def self.load_for_service!(service_name, start_dir: Dir.pwd)
@@ -117,8 +122,24 @@ module Blink
 
     def initialize(path)
       @path = File.expand_path(path)
+      load_dotenv(File.join(dir, ".env"))
       @data = TOML.parse(File.read(@path, encoding: "utf-8"))
       validate!
+    rescue TOML::ParseError => e
+      raise ValidationError, "TOML parse error in #{@path}: #{e.message}"
+    end
+
+    def self.validate_file(path = nil, start_dir: Dir.pwd)
+      manifest_path = resolve_path(path, start_dir: start_dir)
+      data = TOML.parse(File.read(manifest_path, encoding: "utf-8"))
+      Schema.validate(data, manifest_path: manifest_path)
+    rescue TOML::ParseError => e
+      Schema::Result.new(
+        manifest_path: manifest_path || path,
+        errors: [Schema::Issue.new(path: "toml", message: e.message, severity: "error")],
+        warnings: [],
+        data: {}
+      )
     end
 
     # ── Services ────────────────────────────────────────────────────────────
@@ -166,7 +187,11 @@ module Blink
     private
 
     def validate!
-      raise Error, "blink.toml must have a [blink] section" unless @data.key?("blink")
+      result = Schema.validate(@data, manifest_path: @path)
+      return if result.valid?
+
+      lines = result.errors.map { |issue| "#{issue.path}: #{issue.message}" }.join("\n  - ")
+      raise ValidationError, "Manifest validation failed for #{@path}:\n  - #{lines}"
     end
 
     def build_target(name, cfg)
@@ -174,6 +199,26 @@ module Blink
       when "ssh"   then Targets::SSHTarget.new(name, cfg)
       when "local" then Targets::LocalTarget.new(name, cfg)
       else raise Error, "Unknown target type '#{cfg["type"]}' for target '#{name}'"
+      end
+    end
+
+    # Load a .env file from the manifest directory into ENV.
+    # Only sets variables that are not already present in the environment,
+    # so shell-exported vars always take precedence.
+    def load_dotenv(dotenv_path)
+      return unless File.exist?(dotenv_path)
+
+      File.foreach(dotenv_path, encoding: "utf-8") do |raw|
+        line = raw.strip
+        next if line.empty? || line.start_with?("#")
+        next unless line.include?("=")
+
+        key, _, value = line.partition("=")
+        key   = key.strip
+        value = value.strip
+        # Strip surrounding single or double quotes
+        value = value.gsub(/\A(['"])(.*)\1\z/m, '\2')
+        ENV[key] ||= value
       end
     end
   end

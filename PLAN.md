@@ -196,7 +196,6 @@ blink logs <service> [--follow] [--lines N]
 blink restart <service> [--target <target>]
 blink rollback <service> [--target <target>]
 blink plan <service>          # Show what deploy would do (like terraform plan)
-blink apply                   # Deploy all services with pending changes
 blink ps [--target <target>]
 blink top [--target <target>] [--watch [N]]
 blink ssh [--target <target>]
@@ -469,7 +468,6 @@ The new Blink should be able to fully replace the existing homelab `blink` Ruby 
 - [ ] `notify` step (webhook / stdout event)
 - [ ] `shell` step (arbitrary command on target)
 - [ ] Parallel test execution in suites
-- [ ] `apply` command (deploy all services with changes)
 
 ### Phase 4 — Ekho + multi-service
 
@@ -477,7 +475,6 @@ The new Blink should be able to fully replace the existing homelab `blink` Ruby 
 - [ ] Ekho test suite (`suites/ekho_server.rb`, etc.)
 - [ ] PostgreSQL migration step support
 - [ ] Multi-service dependency ordering (deploy postgres before server)
-- [ ] `blink apply` with dependency graph resolution
 
 ### Phase 5 — Extensibility + polish
 
@@ -485,7 +482,7 @@ The new Blink should be able to fully replace the existing homelab `blink` Ruby 
 - [ ] User-defined source plugins
 - [ ] Multiple concurrent target support
 - [ ] `blink diff` — show config drift between declared and actual state
-- [ ] `blink init` — scaffold a `blink.toml` from a GitHub repo
+- [x] `blink init` — scaffold a `blink.toml` with local target + declarative API/UI verifier examples
 - [ ] CI-mode output (GitHub Actions / GitLab CI annotations)
 - [ ] MCP tool: `blink_plan` (returns plan as structured data)
 

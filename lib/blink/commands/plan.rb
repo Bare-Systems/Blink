@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "json"
+
 module Blink
   module Commands
     class Plan
@@ -28,8 +30,30 @@ module Blink
         end
 
         manifest = Manifest.load
-        Planner.new(manifest).plan(@service, target_name: @target, build_name: @build, json_mode: @json)
+        planner = Planner.new(manifest)
+        if @json
+          plan = planner.build(@service, target_name: @target, build_name: @build)
+          puts Response.dump(
+            success: plan.executable?,
+            summary: plan.executable? ? "Plan ready for #{@service}" : "Plan blocked for #{@service}",
+            details: plan.to_h,
+            next_steps: plan.executable? ?
+              ["Run `blink deploy #{@service}` to execute this plan."] :
+              ["Fix the plan blockers and rerun `blink plan #{@service}`."]
+          )
+        else
+          planner.plan(@service, target_name: @target, build_name: @build, json_mode: false)
+        end
       rescue Manifest::Error => e
+        if @json
+          puts Response.dump(
+            success: false,
+            summary: e.message,
+            details: { service: @service, error: e.message },
+            next_steps: ["Fix the manifest or service configuration and rerun `blink plan`."]
+          )
+          exit 1
+        end
         Output.fatal(e.message)
       end
 

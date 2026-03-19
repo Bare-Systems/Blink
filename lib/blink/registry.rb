@@ -12,7 +12,10 @@ module Blink
     # Resolve the target for a service operation, applying overrides.
     def target_for(service_name, operation: "deploy", override: nil)
       svc = @manifest.service!(service_name)
-      name = override || svc.dig(operation, "target") || @manifest.default_target_name
+      name = override ||
+             svc.dig(operation, "target") ||
+             (operation == "rollback" ? svc.dig("deploy", "target") : nil) ||
+             @manifest.default_target_name
       raise Manifest::Error, "No target configured for service '#{service_name}'" unless name
       @manifest.target!(name)
     end
@@ -20,12 +23,16 @@ module Blink
     # Return the pipeline steps for a service operation.
     def pipeline_for(service_name, operation: "deploy")
       svc = @manifest.service!(service_name)
-      svc.dig(operation, "pipeline") || Runner::DEFAULT_PIPELINES[operation] || []
+      svc.dig(operation, "pipeline") ||
+        (operation == "rollback" ? svc.dig("deploy", "rollback_pipeline") : nil) ||
+        Runner::DEFAULT_PIPELINES[operation] || []
     end
 
     # Return the rollback pipeline for a service operation.
     def rollback_for(service_name, operation: "deploy")
       svc = @manifest.service!(service_name)
+      return [] if operation == "rollback"
+
       svc.dig(operation, "rollback_pipeline") || []
     end
 

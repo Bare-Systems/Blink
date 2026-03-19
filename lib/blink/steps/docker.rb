@@ -50,7 +50,15 @@ module Blink
     # The `stop` step in the pipeline handles `docker stop + rm` — this step
     # only handles build + run.
     class Docker < Base
-      def call(ctx)
+      step_definition(
+        description: "Build or run a Docker container from declarative service config.",
+        config_section: "docker",
+        required_keys: ["name"],
+        supported_target_types: %w[local ssh],
+        rollback_strategy: "same"
+      )
+
+      def execute(ctx)
         cfg  = ctx.section("docker").merge(@config)
         name = ctx.resolve(cfg["name"] || raise(Manifest::Error, "docker.name is required for '#{ctx.service_name}'"))
 
@@ -65,6 +73,22 @@ module Blink
       end
 
       private
+
+      def self.validate_config(config, service_config:, service_name:, path:)
+        issues = super
+        build = config["build"]
+        image = config["image"]
+
+        if build && !build.is_a?(Hash)
+          issues << { path: "#{path}.build", message: "docker.build must be a TOML table.", severity: "error" }
+        elsif build && !(build["dockerfile"].is_a?(String) && !build["dockerfile"].strip.empty?)
+          issues << { path: "#{path}.build.dockerfile", message: "docker.build.dockerfile is required.", severity: "error" }
+        elsif !build && !(image.is_a?(String) && !image.strip.empty?)
+          issues << { path: "#{path}.image", message: "docker.image is required when docker.build is absent.", severity: "error" }
+        end
+
+        issues
+      end
 
       # Write the Dockerfile to the remote context dir and run `docker build`.
       # Returns the image tag to use for `docker run`.

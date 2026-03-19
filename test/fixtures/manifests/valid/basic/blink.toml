@@ -1,0 +1,29 @@
+[blink]
+version = "1"
+
+[targets.local]
+type = "local"
+base = "/tmp/blink-fixture"
+
+[services.fixture]
+description = "Fixture service used for validation and dry-run coverage"
+
+[services.fixture.source]
+type = "local_build"
+command = "true"
+artifact = "bin/fixture"
+
+[services.fixture.deploy]
+target = "local"
+pipeline = ["fetch_artifact", "verify"]
+rollback_pipeline = ["stop", "start"]
+
+[services.fixture.verify]
+suite = "suite.rb"
+tags = ["smoke"]
+
+[services.fixture.stop]
+command = "true"
+
+[services.fixture.start]
+command = "true"

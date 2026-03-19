@@ -1,8 +1,13 @@
 # frozen_string_literal: true
 
+require "json"
+require "stringio"
+
 module Blink
   module Commands
     class Deploy
+      ANSI_STRIP = /\e\[[0-9;]*[mGKHF]/.freeze
+
       def initialize(argv)
         @argv     = argv.dup
         @service  = @argv.shift
@@ -39,6 +44,28 @@ module Blink
         manifest = Manifest.load
         runner   = Runner.new(manifest)
 
+        if @json
+          output, result = capture_output do
+            runner.run(
+              @service,
+              target_name: @target,
+              dry_run:     @dry_run,
+              json_mode:   true,
+              version:     @version,
+              build_name:  @build
+            )
+          end
+
+          puts Response.dump(
+            success: result.success?,
+            summary: result.summary,
+            details: result.to_h.merge(output: output),
+            next_steps: next_steps_for(result)
+          )
+          exit 1 if result.failure?
+          return
+        end
+
         start  = Time.now
         result = runner.run(
           @service,
@@ -55,14 +82,29 @@ module Blink
           Output.success("#{result.summary}  (#{elapsed}s)")
         else
           Output.error(result.summary)
-          puts JSON.generate(result.to_h) if @json
           exit 1
         end
-
-        puts JSON.generate(result.to_h) if @json && result.success?
       rescue Manifest::Error => e
+        if @json
+          puts Response.dump(
+            success: false,
+            summary: e.message,
+            details: { service: @service, error: e.message },
+            next_steps: ["Fix the manifest or service configuration and rerun the deploy."]
+          )
+          exit 1
+        end
         Output.fatal(e.message)
       rescue SSHError => e
+        if @json
+          puts Response.dump(
+            success: false,
+            summary: "SSH error: #{e.message}",
+            details: { service: @service, error: e.message },
+            next_steps: ["Check target connectivity with `blink doctor` and retry."]
+          )
+          exit 1
+        end
         Output.fatal("SSH error: #{e.message}")
       end
 
@@ -75,6 +117,32 @@ module Blink
         puts "  #{Output::BOLD}--build NAME#{Output::RESET}     Select a named build (multi-build source only)"
         puts "  #{Output::BOLD}--dry-run#{Output::RESET}        Show what would happen without executing"
         puts "  #{Output::BOLD}--json#{Output::RESET}           Emit machine-readable JSON output"
+      end
+
+      def capture_output
+        old_stdout = $stdout
+        old_stderr = $stderr
+        captured_out = StringIO.new
+        captured_err = StringIO.new
+        $stdout = captured_out
+        $stderr = captured_err
+        result = yield
+        output = [captured_out.string, captured_err.string].reject(&:empty?).join.gsub(ANSI_STRIP, "")
+        [output, result]
+      ensure
+        $stdout = old_stdout
+        $stderr = old_stderr
+      end
+
+      def next_steps_for(result)
+        if result.success?
+          @dry_run ? ["Run the same command without `--dry-run` to execute the deployment."] :
+                     ["Run `blink test #{@service}` to verify the deployment."]
+        elsif result.failed_at == "plan"
+          ["Fix the plan blockers, then rerun `blink plan #{@service}` or `blink deploy #{@service}`."]
+        else
+          ["Inspect the failed step `#{result.failed_at}` and rerun the deploy when ready."]
+        end
       end
     end
   end

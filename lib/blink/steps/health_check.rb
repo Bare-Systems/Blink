@@ -8,7 +8,14 @@ module Blink
     #   timeout:  seconds to wait before failing (default: 30)
     #   interval: seconds between polls (default: 2)
     class HealthCheck < Base
-      def call(ctx)
+      step_definition(
+        description: "Poll a service URL until it returns a successful response.",
+        required_keys: ["url"],
+        supported_target_types: %w[local ssh],
+        rollback_strategy: "same"
+      )
+
+      def execute(ctx)
         cfg      = ctx.section("health_check").merge(@config)
         url      = cfg["url"] || raise(Manifest::Error, "No health_check.url configured for '#{ctx.service_name}'")
         url      = ctx.resolve(url)

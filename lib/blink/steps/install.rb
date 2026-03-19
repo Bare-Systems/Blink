@@ -6,7 +6,14 @@ module Blink
     # Requires ctx.artifact_path (set by fetch_artifact).
     # Config: { "dest" => "relative/path/to/binary" }
     class Install < Base
-      def call(ctx)
+      step_definition(
+        description: "Install the fetched artifact onto the target filesystem.",
+        required_keys: ["dest"],
+        supported_target_types: %w[local ssh],
+        rollback_strategy: "same"
+      )
+
+      def execute(ctx)
         raise "No artifact_path in context — did fetch_artifact run?" unless ctx.artifact_path
 
         install_cfg = ctx.section("install").merge(@config)

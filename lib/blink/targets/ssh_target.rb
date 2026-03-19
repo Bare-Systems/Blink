@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "open3"
+require "shellwords"
 
 module Blink
   module Targets
@@ -26,21 +27,21 @@ module Blink
       # tty: true allocates a pseudo-terminal for sudo-interactive commands.
       def run(cmd, abort_on_failure: true, tty: false)
         opts    = tty ? [*SSH_OPTS, "-t"] : SSH_OPTS
-        success = system("ssh", *opts, ssh_host, cmd)
+        success = system("ssh", *opts, ssh_host, decorate_command(cmd))
         raise SSHError, "Remote command failed: #{cmd.lines.first.chomp}" if !success && abort_on_failure
         success
       end
 
       # Run a command and return stdout. Raises SSHError on non-zero exit.
       def capture(cmd)
-        out, err, status = Open3.capture3("ssh", *SSH_OPTS, ssh_host, cmd)
+        out, err, status = Open3.capture3("ssh", *SSH_OPTS, ssh_host, decorate_command(cmd))
         raise SSHError, "Remote capture failed: #{err.strip}" unless status.success?
         out.strip
       end
 
       # Pipe a bash script via stdin to the remote host.
       def script(bash, abort_on_failure: true)
-        out, err, status = Open3.capture3("ssh", *SSH_OPTS, ssh_host, "bash", "-s", stdin_data: bash)
+        out, err, status = Open3.capture3("ssh", *SSH_OPTS, ssh_host, "bash", "-s", stdin_data: decorate_script(bash))
         print out unless out.empty?
         $stderr.print err unless err.empty?
         raise SSHError, "Remote script failed" if !status.success? && abort_on_failure
@@ -64,6 +65,23 @@ module Blink
 
       def description
         "ssh://#{ssh_host}"
+      end
+
+      private
+
+      def decorate_command(cmd)
+        prefix = remote_env_prefix
+        prefix ? "#{prefix} #{cmd}" : cmd
+      end
+
+      def decorate_script(bash)
+        return bash if environment.empty?
+
+        exports = environment.map do |key, value|
+          "export #{Shellwords.escape(key)}=#{Shellwords.escape(value)}"
+        end.join("\n")
+
+        "#{exports}\n#{bash}"
       end
     end
   end

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "json"
+
 module Blink
   module Commands
     class Status
@@ -17,31 +19,37 @@ module Blink
 
       def run
         manifest = Manifest.load
-        services = @service ? [manifest.service!(@service)].compact : manifest.service_names.map { manifest.service(_1) }
-        service_names = @service ? [@service] : manifest.service_names
+        result = Operations::Status.new(manifest: manifest, service_name: @service, target_name: @target_name).call
 
-        target_name = @target_name || manifest.default_target_name
-        target      = manifest.target!(target_name)
+        unless result[:reachable]
+          if @json
+            puts Response.dump(
+              success: false,
+              summary: "Target '#{result[:target_name]}' is unreachable",
+              details: { target: result[:target], services: [] },
+              next_steps: ["Run `blink doctor#{@target_name ? " --target #{@target_name}" : ""}` to check connectivity."]
+            )
+            exit 1
+          end
 
-        unless target.reachable?
-          Output.fatal("Cannot reach target '#{target_name}' (#{target.description})")
-        end
-
-        results = service_names.map.with_index do |name, i|
-          svc = services[i]
-          check_service(name, svc, target)
+          Output.fatal("Cannot reach target '#{result[:target_name]}' (#{result[:target]})")
         end
 
         if @json
-          require "json"
-          puts JSON.generate(target: target.description, services: results)
+          puts Response.dump(
+            success: result[:down].zero?,
+            summary: "#{result[:healthy]}/#{result[:total]} service(s) healthy on #{result[:target]}",
+            details: { target: result[:target], services: result[:services] },
+            next_steps: result[:down].zero? ? [] : ["Inspect unhealthy services with `blink logs <service>` or rerun deploy."]
+          )
+          exit 1 unless result[:down].zero?
           return
         end
 
-        Output.header("Status  (#{target.description})")
+        Output.header("Status  (#{result[:target]})")
         puts
 
-        results.each do |r|
+        result[:services].each do |r|
           color = r[:healthy] ? Output::GREEN : Output::RED
           status_str = r[:healthy] ? "up" : "down"
           Output.label_row("  #{r[:name]}:", "#{color}#{status_str}#{Output::RESET}  #{Output::GRAY}#{r[:detail]}#{Output::RESET}")
@@ -50,36 +58,37 @@ module Blink
         puts
 
         # Always show docker containers if target is SSH
+        target = manifest.target!(result[:target_name])
         if target.is_a?(Targets::SSHTarget)
           puts "#{Output::BOLD}  Containers#{Output::RESET}"
           show_docker(target)
           puts
         end
       rescue Manifest::Error => e
+        if @json
+          puts Response.dump(
+            success: false,
+            summary: e.message,
+            details: { service: @service, error: e.message },
+            next_steps: ["Fix the manifest or target selection and rerun `blink status`."]
+          )
+          exit 1
+        end
         Output.fatal(e.message)
       rescue SSHError => e
+        if @json
+          puts Response.dump(
+            success: false,
+            summary: "SSH error: #{e.message}",
+            details: { service: @service, error: e.message },
+            next_steps: ["Run `blink doctor` to confirm target connectivity."]
+          )
+          exit 1
+        end
         Output.fatal("SSH error: #{e.message}")
       end
 
       private
-
-      def check_service(name, svc, target)
-        hc_cfg = svc&.dig("health_check")
-        if hc_cfg&.dig("url")
-          url    = hc_cfg["url"]
-          result = target.capture(
-            "curl -sfk --max-time 5 --output /dev/null --write-out '%{http_code}' #{url} 2>/dev/null || echo 000"
-          )
-          code    = result.to_i
-          healthy = (200..299).cover?(code)
-          { name: name, healthy: healthy, detail: "HTTP #{code}  #{url}" }
-        else
-          { name: name, healthy: nil, detail: "no health_check.url configured" }
-        end
-      rescue => e
-        { name: name, healthy: false, detail: e.message }
-      end
-
       def show_docker(target)
         raw = target.capture('docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" 2>&1')
         lines = raw.lines
