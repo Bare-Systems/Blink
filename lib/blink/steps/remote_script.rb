@@ -59,7 +59,7 @@ module Blink
 
       def resolve_script(cfg, ctx)
         if cfg["path"]
-          script_abs = File.expand_path(cfg["path"], ctx.manifest.dir)
+          script_abs = File.expand_path(cfg["path"], ctx.manifest.service_dir(ctx.service_name))
           raise "Script file not found: #{script_abs}" unless File.exist?(script_abs)
           File.read(script_abs, encoding: "utf-8")
         elsif cfg["inline"]

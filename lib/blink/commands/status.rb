@@ -25,14 +25,14 @@ module Blink
           if @json
             puts Response.dump(
               success: false,
-              summary: "Target '#{result[:target_name]}' is unreachable",
+              summary: "Target '#{result[:target_name] || result[:target]}' is unreachable",
               details: { target: result[:target], services: [] },
               next_steps: ["Run `blink doctor#{@target_name ? " --target #{@target_name}" : ""}` to check connectivity."]
             )
             exit 1
           end
 
-          Output.fatal("Cannot reach target '#{result[:target_name]}' (#{result[:target]})")
+          Output.fatal("Cannot reach target '#{result[:target_name] || result[:target]}' (#{result[:target]})")
         end
 
         if @json
@@ -58,8 +58,9 @@ module Blink
         puts
 
         # Always show docker containers if target is SSH
-        target = manifest.target!(result[:target_name])
-        if target.is_a?(Targets::SSHTarget)
+        docker_target_name = result[:target_name] || result[:services].first&.dig(:target_name)
+        target = docker_target_name ? manifest.target!(docker_target_name) : nil
+        if target&.is_a?(Targets::SSHTarget)
           puts "#{Output::BOLD}  Containers#{Output::RESET}"
           show_docker(target)
           puts

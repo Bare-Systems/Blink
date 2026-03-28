@@ -14,7 +14,8 @@ module Blink
   #   5. Writes `.blink/` state + history unless dry_run is true
   class Runner
     DEFAULT_PIPELINES = {
-      "deploy" => %w[fetch_artifact stop backup install start health_check verify],
+      "deploy"   => %w[fetch_artifact stop backup install start health_check verify],
+      "build"    => %w[fetch_artifact],
       "rollback" => [],
     }.freeze
 

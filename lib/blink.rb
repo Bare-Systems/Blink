@@ -16,6 +16,7 @@ require_relative "blink/targets/local_target"
 
 # ── Sources ───────────────────────────────────────────────────────────────────
 require_relative "blink/sources/base"
+require_relative "blink/sources/containerized_local_build"
 require_relative "blink/sources/github_release"
 require_relative "blink/sources/local_build"
 require_relative "blink/sources/url"
@@ -54,6 +55,7 @@ require_relative "blink/planner"
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 require_relative "blink/commands/init"
+require_relative "blink/commands/build"
 require_relative "blink/commands/deploy"
 require_relative "blink/commands/plan"
 require_relative "blink/commands/test"
@@ -69,6 +71,7 @@ require_relative "blink/commands/ps"
 require_relative "blink/commands/state"
 require_relative "blink/commands/history"
 require_relative "blink/commands/ssh_cmd"
+require_relative "blink/commands/forward"
 
 # ── MCP server (loaded lazily via --mcp flag in CLI) ──────────────────────────
 # require_relative "blink/mcp_server"   # loaded on demand in cli.rb

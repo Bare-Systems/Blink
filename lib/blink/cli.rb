@@ -4,6 +4,7 @@ module Blink
   class CLI
     COMMANDS = {
       "init"    => Commands::Init,
+      "build"   => Commands::Build,
       "deploy"  => Commands::Deploy,
       "plan"    => Commands::Plan,
       "test"    => Commands::Test,
@@ -19,11 +20,13 @@ module Blink
       "state"   => Commands::State,
       "history" => Commands::History,
       "ssh"     => Commands::SshCmd,
+      "forward" => Commands::Forward,
     }.freeze
 
     DESCRIPTIONS = {
       "init    [--output PATH]"    => "Scaffold a blink.toml manifest in the current workspace",
-      "deploy  <service>"          => "Deploy a service using its declared pipeline",
+      "build   <service>"          => "Build a service artifact (fetch/compile only, no deploy)",
+      "deploy  [service]"          => "Deploy a service (or all services if none specified)",
       "plan    <service>"          => "Show what deploy would do without executing (dry-run)",
       "test    [service] [@tag]"   => "Run verification suites against a target",
       "validate [path]"            => "Validate blink.toml and print schema errors",
@@ -38,6 +41,7 @@ module Blink
       "state   [service]"          => "Show persisted .blink state",
       "history [service]"          => "Show recent .blink runs",
       "ssh     [--target NAME]"    => "Open an interactive SSH session",
+      "forward <service>"          => "SSH port-forward a service to localhost",
     }.freeze
 
     def initialize(argv)

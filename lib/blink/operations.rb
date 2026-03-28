@@ -6,6 +6,20 @@ require "time"
 
 module Blink
   module Operations
+    def self.step_context(manifest:, service_name:, target:)
+      Steps::StepContext.new(
+        manifest: manifest,
+        service_name: service_name,
+        target: target,
+        dry_run: false,
+        json_mode: false,
+        version: "latest",
+        build_name: nil,
+        artifact_path: nil,
+        backup_path: nil
+      )
+    end
+
     class StepCatalog
       def initialize(step_name: nil)
         @step_name = step_name
@@ -56,18 +70,14 @@ module Blink
 
       def call
         service_names = @service_name ? [@service_name] : @manifest.service_names
-        target = @manifest.target!(@target_name || @manifest.default_target_name)
-        reachable = target.reachable?
-
-        services = if reachable
-          service_names.map { |name| check_service(name, @manifest.service!(name), target) }
-        else
-          []
-        end
+        services = service_names.map { |name| check_service(name) }
+        reachable = services.all? { |service| service[:reachable] != false }
+        target_descriptions = services.map { |service| service[:target] }.compact.uniq
+        target_names = services.map { |service| service[:target_name] }.compact.uniq
 
         {
-          target: target.description,
-          target_name: target.name,
+          target: target_descriptions.one? ? target_descriptions.first : "multiple targets",
+          target_name: target_names.one? ? target_names.first : nil,
           reachable: reachable,
           services: services,
           healthy: services.count { _1[:healthy] == true },
@@ -78,20 +88,34 @@ module Blink
 
       private
 
-      def check_service(name, svc, target)
+      def check_service(name)
+        svc = @manifest.service!(name)
+        target = Registry.new(@manifest).target_for(name, override: @target_name)
+        reachable = target.reachable?
+        return { name: name, healthy: false, reachable: false, target: target.description, target_name: target.name, detail: "target unreachable" } unless reachable
+
         hc_cfg = svc&.dig("health_check")
         if hc_cfg&.dig("url")
-          url = hc_cfg["url"]
+          url = Operations.step_context(manifest: @manifest, service_name: name, target: target).resolve(hc_cfg["url"])
+          http_version = hc_cfg["http_version"]
           code = target.capture(
-            "curl -sfk --max-time 5 --output /dev/null --write-out '%{http_code}' #{url} 2>/dev/null || echo 000"
+            "curl -sfk --max-time 5 #{curl_http_version_flag(http_version)} --output /dev/null --write-out '%{http_code}' #{url} 2>/dev/null || echo 000"
           ).to_i
           healthy = (200..299).cover?(code)
-          { name: name, healthy: healthy, detail: "HTTP #{code}  #{url}", url: url, code: code }
+          { name: name, healthy: healthy, reachable: true, detail: "HTTP #{code}  #{url}", url: url, code: code, target: target.description, target_name: target.name }
         else
-          { name: name, healthy: nil, detail: "no health_check.url configured" }
+          { name: name, healthy: nil, reachable: true, detail: "no health_check.url configured", target: target.description, target_name: target.name }
         end
       rescue => e
-        { name: name, healthy: false, detail: e.message }
+        { name: name, healthy: false, reachable: false, detail: e.message, target: target&.description, target_name: target&.name }
+      end
+
+      def curl_http_version_flag(http_version)
+        case http_version.to_s
+        when "1.1" then "--http1.1"
+        when "2" then "--http2"
+        else ""
+        end
       end
     end
 
@@ -125,11 +149,14 @@ module Blink
 
           @manifest.service_names.each do |name|
             svc = @manifest.service(name)
+            service_target = target_for_service(name)
+            next unless service_target.name == target.name && service_target.description == target.description
             url = svc&.dig("health_check", "url")
             next unless url
 
+            url = Operations.step_context(manifest: @manifest, service_name: name, target: service_target).resolve(url)
             ok = begin
-              code = target.capture(
+              code = service_target.capture(
                 "curl -sfk --max-time 5 --output /dev/null --write-out '%{http_code}' #{url} 2>/dev/null || echo 000"
               ).to_i
               (200..299).cover?(code)
@@ -151,7 +178,13 @@ module Blink
       private
 
       def targets
-        @target_name ? [@manifest.target!(@target_name)] : @manifest.target_names.map { @manifest.target!(_1) }
+        return [@manifest.target!(@target_name)] if @target_name
+
+        @manifest.service_names.map { |name| target_for_service(name) }.uniq { |target| [target.name, target.description] }
+      end
+
+      def target_for_service(service_name)
+        Registry.new(@manifest).target_for(service_name, override: @target_name)
       end
 
       def disk_check(target, checks)
@@ -245,29 +278,39 @@ module Blink
       def call
         svc = @manifest.service!(@service_name)
         target = @manifest.target!(resolved_target_name(svc))
+        ctx = Operations.step_context(manifest: @manifest, service_name: @service_name, target: target)
 
         steps = if svc.dig("stop", "command") && svc.dig("start", "command")
           [
-            { step: "stop", command: svc.dig("stop", "command"), abort_on_failure: false },
-            { step: "start", command: svc.dig("start", "command"), abort_on_failure: true },
+            { step: "stop", command: ctx.resolve(svc.dig("stop", "command")), abort_on_failure: false },
+            { step: "start", command: ctx.resolve(svc.dig("start", "command")), abort_on_failure: true },
+          ]
+        elsif svc.dig("stop", "command") && svc["docker"].is_a?(Hash)
+          [
+            { step: "stop", command: ctx.resolve(svc.dig("stop", "command")), abort_on_failure: false },
+            { step: "docker", managed: true, abort_on_failure: true },
           ]
         elsif (restart_cmd = svc.dig("restart", "command"))
           [
-            { step: "restart", command: restart_cmd, abort_on_failure: true },
+            { step: "restart", command: ctx.resolve(restart_cmd), abort_on_failure: true },
           ]
         else
           raise Manifest::Error, "No stop/start or restart commands configured for '#{@service_name}'"
         end
 
         steps.each do |step|
-          target.run(step[:command], abort_on_failure: step[:abort_on_failure])
+          if step[:managed] && step[:step] == "docker"
+            Steps::Docker.new.call(ctx)
+          else
+            target.run(step[:command], abort_on_failure: step[:abort_on_failure])
+          end
         end
 
         {
           service: @service_name,
           target: target.description,
           target_name: target.name,
-          steps: steps.map { |step| step.slice(:step, :command) }
+          steps: steps.map { |step| step[:managed] ? { step: step[:step], command: "managed by Blink #{step[:step]} step" } : step.slice(:step, :command) }
         }
       end
 
@@ -673,7 +716,7 @@ module Blink
             service = @manifest.service!(name)
             verify = service["verify"] || {}
             suite_path = verify["suite"]
-            suite_abs = suite_path ? File.expand_path(suite_path, @manifest.dir) : nil
+            suite_abs = suite_path ? File.expand_path(suite_path, @manifest.service_dir(name)) : nil
             tests = verify["tests"]
 
             next unless tests || (suite_abs && File.exist?(suite_abs))
@@ -696,22 +739,12 @@ module Blink
       def target_for(service_name)
         name = @target_name ||
                @manifest.service(service_name)&.dig("deploy", "target") ||
-               @manifest.default_target_name
-        @manifest.target!(name)
+               @manifest.default_target_name_for(service_name)
+        @manifest.target_for_service!(service_name, name)
       end
 
       def step_context_for(entry)
-        Steps::StepContext.new(
-          manifest: @manifest,
-          service_name: entry[:name],
-          target: entry[:target],
-          dry_run: false,
-          json_mode: false,
-          version: "latest",
-          build_name: nil,
-          artifact_path: nil,
-          backup_path: nil
-        )
+        Operations.step_context(manifest: @manifest, service_name: entry[:name], target: entry[:target])
       end
     end
   end

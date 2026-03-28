@@ -60,7 +60,7 @@ module Blink
 
         # ── 2. Ruby suite file ──────────────────────────────────────────────
         if (suite_path = cfg["suite"])
-          suite_abs = File.expand_path(suite_path, ctx.manifest.dir)
+          suite_abs = File.expand_path(suite_path, ctx.manifest.service_dir(ctx.service_name))
           raise "Suite file not found: #{suite_abs}" unless File.exist?(suite_abs)
 
           runner = Testing::Runner.new(tags: tags, target: ctx.target, json_mode: ctx.json_mode)

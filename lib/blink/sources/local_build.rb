@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "open3"
-
 module Blink
   module Sources
     class LocalBuild < Base
@@ -71,10 +69,7 @@ module Blink
         Output.step("Building local artifact in #{workdir}...#{label}")
         Output.info("Version override '#{version}' ignored for local_build") unless version == "latest"
 
-        out, err, status = Open3.capture3(env, command, chdir: workdir)
-        print out unless out.empty?
-        $stderr.print err unless err.empty?
-        raise "Local build failed: #{command}" unless status.success?
+        execute_command!(env, command, chdir: workdir, failure_message: "Local build failed: #{command}")
 
         artifact_path = File.expand_path(artifact_rel, workdir)
         raise "Built artifact not found: #{artifact_path}" unless File.exist?(artifact_path)
@@ -114,28 +109,11 @@ module Blink
       end
 
       def stringify_env(value)
-        return {} unless value.is_a?(Hash)
-
-        value.transform_keys(&:to_s).transform_values(&:to_s)
+        super
       end
 
       def fingerprint_workdir(workdir, artifact_rel)
-        excluded = [File.expand_path(artifact_rel, workdir)]
-        entries = Dir.glob(File.join(workdir, "**", "*"), File::FNM_DOTMATCH).sort.filter_map do |path|
-          next if File.directory?(path)
-          next if path.include?("/.git/")
-          next if path.include?("/.blink/")
-          next if excluded.include?(path)
-
-          stat = File.stat(path)
-          {
-            path: path.delete_prefix("#{workdir}/"),
-            size: stat.size,
-            mtime: stat.mtime.to_f
-          }
-        end
-
-        digest_for(entries)
+        fingerprint_paths([workdir], excluded: [File.expand_path(artifact_rel, workdir)])
       end
     end
   end

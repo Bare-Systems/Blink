@@ -5,7 +5,7 @@ require "pathname"
 module Blink
   class Schema
     KNOWN_TARGET_TYPES = %w[local ssh].freeze
-    KNOWN_SOURCE_TYPES = %w[github_release local_build url].freeze
+    KNOWN_SOURCE_TYPES = %w[containerized_local_build github_release local_build url].freeze
     KNOWN_INLINE_TEST_TYPES = %w[api http shell mcp ui script].freeze
     KNOWN_STEPS = %w[
       fetch_artifact
@@ -63,15 +63,22 @@ module Blink
     end
 
     class << self
-      def validate(data, manifest_path: nil)
-        Validator.new(data, manifest_path: manifest_path).validate
+      def validate(data, manifest_path: nil, service_target_catalogs: {}, service_dirs: {})
+        Validator.new(
+          data,
+          manifest_path: manifest_path,
+          service_target_catalogs: service_target_catalogs,
+          service_dirs: service_dirs
+        ).validate
       end
     end
 
     class Validator
-      def initialize(data, manifest_path:)
+      def initialize(data, manifest_path:, service_target_catalogs: {}, service_dirs: {})
         @data = data.is_a?(Hash) ? data : {}
         @manifest_path = manifest_path
+        @service_target_catalogs = service_target_catalogs || {}
+        @service_dirs = service_dirs || {}
         @errors = []
         @warnings = []
       end
@@ -92,11 +99,27 @@ module Blink
       def validate_root
         validate_blink_section
 
-        targets = require_hash(@data, "targets", "A manifest must define at least one target.")
-        validate_targets(targets) if targets
+        targets = @data["targets"]
+        if targets.nil?
+          targets = {}
+        elsif !targets.is_a?(Hash)
+          error("targets", "targets must be a TOML table.")
+          targets = {}
+        end
+        validate_targets(targets) if targets.any?
 
-        services = require_hash(@data, "services", "A manifest must define at least one service.")
-        validate_services(services, targets || {}) if services
+        services = @data["services"]
+        if services.nil?
+          services = {}
+        elsif !services.is_a?(Hash)
+          error("services", "services must be a TOML table.")
+          services = {}
+        end
+        validate_services(services, targets || {}) if services.any?
+        validate_service_target_catalogs
+
+        error("targets", "A manifest must define at least one target.") if targets.empty? && all_service_targets.empty?
+        error("services", "A manifest must define at least one service.") if services.empty?
       end
 
       def validate_blink_section
@@ -106,12 +129,11 @@ module Blink
         version = blink["version"]
         if version.nil?
           error("blink.version", "blink.version is required and must currently be set to \"1\".")
-          return
+        elsif version.to_s != "1"
+          error("blink.version", "Unsupported manifest version #{version.inspect}. Expected \"1\".")
         end
 
-        return if version.to_s == "1"
-
-        error("blink.version", "Unsupported manifest version #{version.inspect}. Expected \"1\".")
+        validate_manifest_includes(blink)
       end
 
       def validate_targets(targets)
@@ -181,14 +203,21 @@ module Blink
           validate_pipeline(name, pipeline, "#{deploy_path}.pipeline", allow_empty: false)
           validate_pipeline(name, rollback, "#{deploy_path}.rollback_pipeline", allow_empty: true)
 
+          priority = deploy_cfg["priority"]
+          if !priority.nil? && (!priority.is_a?(Integer) || priority.negative?)
+            error("#{deploy_path}.priority", "deploy.priority must be a non-negative integer (higher value deploys first).")
+          end
+
           target_name = deploy_cfg["target"]
+          available_targets = targets_for_service(name, targets)
+
           if target_name
             if !stringish?(target_name)
               error("#{deploy_path}.target", "deploy.target must be a target name.")
-            elsif !targets.key?(target_name)
+            elsif !available_targets.key?(target_name)
               error("#{deploy_path}.target", "deploy.target references unknown target #{target_name.inspect}.")
             end
-          elsif targets.size > 1
+          elsif available_targets.size > 1
             warn("#{deploy_path}.target", "No deploy.target set; Blink will use the first declared target by default.")
           end
 
@@ -230,10 +259,59 @@ module Blink
         end
       end
 
+      def validate_manifest_includes(blink)
+        includes = blink["includes"]
+        return if includes.nil?
+
+        unless includes.is_a?(Array)
+          error("blink.includes", "blink.includes must be an array of manifest paths.")
+          return
+        end
+
+        includes.each_with_index do |entry, idx|
+          path = "blink.includes.#{idx}"
+          if !entry.is_a?(String) || entry.strip.empty?
+            error(path, "blink.includes entries must be non-empty strings.")
+            next
+          end
+
+          next unless @manifest_path
+
+          resolved = File.expand_path(entry, File.dirname(@manifest_path))
+          error(path, "Included manifest not found: #{entry}") unless File.exist?(resolved)
+        end
+      end
+
+      def targets_for_service(service_name, root_targets)
+        service_targets = @service_target_catalogs[service_name]
+        return service_targets if service_targets.is_a?(Hash) && !service_targets.empty?
+
+        root_targets
+      end
+
+      def all_service_targets
+        @service_target_catalogs.values.select { |targets| targets.is_a?(Hash) && !targets.empty? }
+      end
+
+      def validate_service_target_catalogs
+        @service_target_catalogs.each do |service_name, targets|
+          next unless targets.is_a?(Hash) && !targets.empty?
+
+          validate_targets(targets.transform_keys(&:to_s))
+        end
+      end
+
       def validate_source(service_name, source, path)
         type = source["type"]
+
+        # Multi-source pattern: no top-level type, named builds each carry their own type
+        if type.nil? && source["builds"].is_a?(Hash) && !source["builds"].empty?
+          validate_multi_source(service_name, source, path)
+          return
+        end
+
         unless stringish?(type)
-          error("#{path}.type", "source.type is required for service #{service_name.inspect}.")
+          error("#{path}.type", "source.type is required (or use source.builds with per-build type for multi-source).")
           return
         end
 
@@ -247,6 +325,18 @@ module Blink
         validate_source_cache(source, path)
 
         case type
+        when "containerized_local_build"
+          require_string(source, "#{path}.image", "containerized_local_build sources require image.")
+          require_string_or_string_array(source, "#{path}.mount", "containerized_local_build sources require mount = \"host:container\" or an array of mount specs.")
+          require_string(source, "#{path}.workdir", "containerized_local_build sources require workdir.")
+          require_string(source, "#{path}.command", "containerized_local_build sources require command.")
+          require_string(source, "#{path}.artifact", "containerized_local_build sources require artifact.")
+          optional_string(source, "#{path}.platform")
+          optional_string(source, "#{path}.entrypoint")
+          optional_string(source, "#{path}.user")
+          optional_boolean(source, "#{path}.docker_socket")
+          optional_boolean(source, "#{path}.pull")
+          optional_string_or_array_of_strings(source, "#{path}.env_file", "containerized_local_build env_file must be a string or array of strings.")
         when "github_release"
           require_string(source, "#{path}.repo", "github_release sources require repo = \"owner/name\".")
           require_string(source, "#{path}.asset", "github_release sources require asset = \"artifact-name\".")
@@ -426,7 +516,7 @@ module Blink
           when "verify"
             validate_verify(service_name, cfg, step_path)
           when "remote_script"
-            validate_remote_script(cfg, step_path)
+            validate_remote_script(service_name, cfg, step_path)
           when "provision"
             validate_provision(cfg, step_path)
           when "docker"
@@ -450,7 +540,7 @@ module Blink
 
         if has_suite
           require_string(cfg, "#{path}.suite", "verify.suite must point to a Ruby file.")
-          suite_abs = absolute_path(has_suite)
+          suite_abs = absolute_path(has_suite, service_name: service_name)
           error("#{path}.suite", "Suite file not found: #{suite_abs}") unless suite_abs && File.exist?(suite_abs)
         end
 
@@ -491,7 +581,7 @@ module Blink
           when "script"
             script_rel = spec["path"]
             require_string(spec, "#{test_path}.path", "script tests require a local script path.")
-            script_abs = absolute_path(script_rel)
+            script_abs = absolute_path(script_rel, service_name: service_name)
             error("#{test_path}.path", "Script test file not found: #{script_abs}") unless script_abs && File.exist?(script_abs)
           end
 
@@ -589,7 +679,7 @@ module Blink
         error(path, "Check must declare at least one matcher: equals, contains, matches#{allow_present ? ', or present' : ''}.")
       end
 
-      def validate_remote_script(cfg, path)
+      def validate_remote_script(service_name, cfg, path)
         has_path = stringish?(cfg["path"])
         has_inline = stringish?(cfg["inline"])
 
@@ -605,7 +695,7 @@ module Blink
 
         return unless has_path
 
-        script_abs = absolute_path(cfg["path"])
+        script_abs = absolute_path(cfg["path"], service_name: service_name)
         error("#{path}.path", "Script file not found: #{script_abs}") unless script_abs && File.exist?(script_abs)
       end
 
@@ -674,6 +764,23 @@ module Blink
         error(path, "Expected a string value.")
       end
 
+      def require_string_or_string_array(hash, path, message)
+        value = hash[path.split(".").last]
+        return if stringish?(value)
+        return if array_of_strings?(value) && !value.empty?
+
+        error(path, message)
+      end
+
+      def optional_string_or_array_of_strings(hash, path, message)
+        value = hash[path.split(".").last]
+        return if value.nil?
+        return if stringish?(value)
+        return if array_of_strings?(value)
+
+        error(path, message)
+      end
+
       def array_of_strings?(value)
         value.is_a?(Array) && value.all? { |item| stringish?(item) }
       end
@@ -691,6 +798,26 @@ module Blink
         (KNOWN_STEPS + registry_steps).uniq.sort
       end
 
+      def validate_multi_source(service_name, source, path)
+        builds = source["builds"]
+        default_build = source["default"]
+
+        if default_build && !builds.key?(default_build)
+          error("#{path}.default", "source.default references unknown build #{default_build.inspect}.")
+        end
+
+        builds.each do |build_name, build_cfg|
+          build_path = "#{path}.builds.#{build_name}"
+          unless build_cfg.is_a?(Hash)
+            error(build_path, "Each named build must be a TOML table.")
+            next
+          end
+
+          # Each build entry in multi-source must have its own type — validate it as a full source config
+          validate_source(service_name, build_cfg, build_path)
+        end
+      end
+
       def error(path, message)
         @errors << Issue.new(path: path, message: message, severity: "error")
       end
@@ -699,11 +826,11 @@ module Blink
         @warnings << Issue.new(path: path, message: message, severity: "warning")
       end
 
-      def absolute_path(relative)
+      def absolute_path(relative, service_name: nil)
         return nil unless stringish?(relative)
         return relative if Pathname.new(relative).absolute?
 
-        base = @manifest_path ? File.dirname(@manifest_path) : Dir.pwd
+        base = @service_dirs[service_name] || (@manifest_path ? File.dirname(@manifest_path) : Dir.pwd)
         File.expand_path(relative, base)
       end
     end

@@ -15,9 +15,9 @@ module Blink
       name = override ||
              svc.dig(operation, "target") ||
              (operation == "rollback" ? svc.dig("deploy", "target") : nil) ||
-             @manifest.default_target_name
+             @manifest.default_target_name_for(service_name)
       raise Manifest::Error, "No target configured for service '#{service_name}'" unless name
-      @manifest.target!(name)
+      @manifest.target_for_service!(service_name, name)
     end
 
     # Return the pipeline steps for a service operation.

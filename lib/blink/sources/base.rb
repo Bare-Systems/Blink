@@ -73,6 +73,27 @@ module Blink
         path
       end
 
+      def execute_command!(env, command, chdir:, failure_message:)
+        out, err, status = capture_command(env, command, chdir: chdir)
+        print out unless out.to_s.empty?
+        $stderr.print err unless err.to_s.empty?
+        raise failure_message unless status.success?
+
+        [out, err, status]
+      end
+
+      def capture_command(env, command, chdir:)
+        runner = @config["_command_runner"]
+        normalized_env = stringify_env(env)
+        return runner.call(normalized_env, command, chdir: chdir) if runner.respond_to?(:call)
+
+        if command.is_a?(Array)
+          Open3.capture3(normalized_env, *command, chdir: chdir)
+        else
+          Open3.capture3(normalized_env, command, chdir: chdir)
+        end
+      end
+
       def sanitize_filename(filename)
         name = filename.to_s.strip
         return "artifact" if name.empty?
@@ -82,6 +103,57 @@ module Blink
 
       def digest_for(value)
         Digest::SHA256.hexdigest(JSON.generate(value))
+      end
+
+      def fingerprint_paths(paths, excluded: [])
+        excluded_paths = Array(excluded).compact.map { |path| File.expand_path(path) }.uniq
+
+        entries = Array(paths).compact.map { |path| File.expand_path(path) }.uniq.sort.flat_map do |root|
+          next [] unless File.exist?(root)
+
+          if File.directory?(root)
+            Dir.glob(File.join(root, "**", "*"), File::FNM_DOTMATCH).sort.filter_map do |path|
+              next if File.directory?(path)
+              next if path.include?("/.git/")
+              next if path.include?("/.blink/")
+              next if excluded_paths.include?(path)
+
+              stat = File.stat(path)
+              {
+                root: root,
+                path: path.delete_prefix("#{root}/"),
+                size: stat.size,
+                mtime: stat.mtime.to_f
+              }
+            end
+          else
+            next [] if excluded_paths.include?(root)
+
+            stat = File.stat(root)
+            [{
+              root: File.dirname(root),
+              path: File.basename(root),
+              size: stat.size,
+              mtime: stat.mtime.to_f
+            }]
+          end
+        end
+
+        digest_for(entries)
+      end
+
+      def stringify_env(value)
+        return {} unless value.is_a?(Hash)
+
+        value.transform_keys(&:to_s).transform_values(&:to_s)
+      end
+
+      def raise_source_error(message, error_class = RuntimeError)
+        raise error_class, source_error_message(message)
+      end
+
+      def source_error_message(message)
+        "service '#{@config["_service_name"] || "unknown"}' source '#{@config["type"] || "unknown"}': #{message}"
       end
 
       def cache_root
@@ -241,9 +313,10 @@ module Blink
     def self.build(config)
       case config["type"]
       when "github_release" then GithubRelease.new(config)
+      when "containerized_local_build" then ContainerizedLocalBuild.new(config)
       when "local_build"    then LocalBuild.new(config)
       when "url"            then Url.new(config)
-      else raise Manifest::Error, "Unknown source type '#{config["type"]}'. Supported: github_release, local_build, url"
+      else raise Manifest::Error, "Unknown source type '#{config["type"]}'. Supported: containerized_local_build, github_release, local_build, url"
       end
     end
   end

@@ -93,10 +93,20 @@ module Blink
         builds = source_cfg["builds"]
         if builds && !builds.empty?
           resolved = build_name || source_cfg["default"] || (builds.size == 1 ? builds.keys.first : nil)
-          printf "  %-16s %s (%s)\n", "Source:", source_cfg["type"], "multi-build"
-          builds.each do |name, bcfg|
-            marker = name == resolved ? " ◀ selected" : ""
-            printf "    %-14s %s%s\n", name + ":", bcfg["artifact"].to_s, marker
+          if source_cfg["type"].nil?
+            # Multi-source: each build has its own type
+            printf "  %-16s %s\n", "Source:", "multi-source"
+            builds.each do |name, bcfg|
+              marker = name == resolved ? " ◀ selected" : ""
+              printf "    %-14s %s (%s)%s\n", name + ":", bcfg["artifact"].to_s, bcfg["type"].to_s, marker
+            end
+          else
+            # local_build named variants (all same type)
+            printf "  %-16s %s (%s)\n", "Source:", source_cfg["type"], "multi-build"
+            builds.each do |name, bcfg|
+              marker = name == resolved ? " ◀ selected" : ""
+              printf "    %-14s %s%s\n", name + ":", bcfg["artifact"].to_s, marker
+            end
           end
         else
           printf "  %-16s %s (%s)\n", "Source:", source_cfg["repo"] || source_cfg["image"] || "?", source_cfg["type"]
@@ -169,7 +179,7 @@ module Blink
       security = source_security_for(svc["source"], pipeline)
 
       warnings << "No description provided for this service." if svc["description"].to_s.strip.empty?
-      warnings << "No rollback pipeline declared." if operation != "rollback" && rollback.empty?
+      warnings << "No rollback pipeline declared." if operation == "deploy" && rollback.empty?
       warnings << "#{operation}.target is not set; Blink will use the default target." if declared_target.nil? && operation != "rollback"
 
       blockers << "Pipeline is empty." if pipeline.empty?
@@ -181,10 +191,10 @@ module Blink
       blockers << "verify requires verify.suite or verify.tests." if pipeline.include?("verify") && !svc.dig("verify", "suite") && !svc.dig("verify", "tests")
 
       source_cfg = svc["source"] || {}
-      if pipeline.include?("fetch_artifact") && source_cfg["type"] == "local_build"
+      if pipeline.include?("fetch_artifact")
         builds = source_cfg["builds"] || {}
         if builds.size > 1 && build_name.nil? && source_cfg["default"].nil?
-          blockers << "local_build defines multiple builds but neither source.default nor --build was provided."
+          blockers << "Multiple builds defined (#{builds.keys.join(", ")}) but neither source.default nor --build was provided."
         end
       end
 
@@ -231,6 +241,9 @@ module Blink
 
     def source_security_for(source_cfg, pipeline)
       return { "applicable" => false, "remote" => false } unless pipeline.include?("fetch_artifact") && source_cfg.is_a?(Hash)
+
+      # Multi-source: security is per-build; report as non-applicable at the top level for now
+      return { "applicable" => false, "remote" => false, "type" => "multi_source" } if source_cfg["type"].nil?
 
       type = source_cfg["type"]
       integrity_mode =

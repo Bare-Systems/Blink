@@ -22,16 +22,16 @@ module Blink
         @target = target
       end
 
-      def get(url, headers: {}, host: nil)
-        request("GET", url, headers: with_host(headers, host))
+      def get(url, headers: {}, host: nil, http_version: nil)
+        request("GET", url, headers: with_host(headers, host), http_version: http_version)
       end
 
-      def post(url, body: nil, headers: {}, host: nil)
-        request("POST", url, body: body, headers: with_host(headers, host))
+      def post(url, body: nil, headers: {}, host: nil, http_version: nil)
+        request("POST", url, body: body, headers: with_host(headers, host), http_version: http_version)
       end
 
-      def head(url, headers: {}, host: nil)
-        request("HEAD", url, headers: with_host(headers, host), head_only: true)
+      def head(url, headers: {}, host: nil, http_version: nil)
+        request("HEAD", url, headers: with_host(headers, host), head_only: true, http_version: http_version)
       end
 
       private
@@ -40,8 +40,10 @@ module Blink
         host ? headers.merge("Host" => host) : headers
       end
 
-      def request(method, url, body: nil, headers: {}, head_only: false)
+      def request(method, url, body: nil, headers: {}, head_only: false, http_version: nil)
         parts = %w[curl -sk --max-time 10 -i] + ["-X", method]
+        parts << "--http1.1" if http_version.to_s == "1.1"
+        parts << "--http2" if http_version.to_s == "2"
         headers.each { |k, v| parts += ["-H", "#{k}: #{v}"] }
         if body
           parts += ["-H", "Content-Type: application/json"] unless headers.key?("Content-Type")

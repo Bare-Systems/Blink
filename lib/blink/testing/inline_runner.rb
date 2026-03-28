@@ -141,14 +141,15 @@ module Blink
         url     = resolve(spec["url"] || raise(Manifest::Error, "http test '#{name}' requires url"))
         method  = (spec["method"] || "GET").upcase
         headers = resolved_headers(spec)
+        http_version = spec["http_version"]
         body    = spec["body"]
         body    = resolve(body) if body.is_a?(String)
 
         res = case method
-              when "GET"  then @http.get(url,  headers: headers)
-              when "POST" then @http.post(url, body: body, headers: headers)
-              when "HEAD" then @http.head(url, headers: headers)
-              else             @http.get(url,  headers: headers)
+              when "GET"  then @http.get(url,  headers: headers, http_version: http_version)
+              when "POST" then @http.post(url, body: body, headers: headers, http_version: http_version)
+              when "HEAD" then @http.head(url, headers: headers, http_version: http_version)
+              else             @http.get(url,  headers: headers, http_version: http_version)
               end
 
         apply_response_checks(name, res, normalized_checks(spec, default_status: nil))
@@ -208,7 +209,7 @@ module Blink
 
       def run_script(name, spec)
         path = spec["path"] || raise(Manifest::Error, "script test '#{name}' requires path")
-        abs  = File.expand_path(path, @ctx.manifest.dir)
+        abs  = File.expand_path(path, @ctx.manifest.service_dir(@ctx.service_name))
         raise "Test script not found: #{abs}" unless File.exist?(abs)
 
         # Run locally (not via SSH) — the script tests the deployed service

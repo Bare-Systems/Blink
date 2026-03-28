@@ -85,7 +85,7 @@ module Blink
           key = $1
           val = service_config[key]
           val = target.config[key] unless val.is_a?(String)
-          val.is_a?(String) ? val : $&
+          val.is_a?(String) ? val.encode("utf-8") : $&
         end
       end
     end

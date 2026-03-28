@@ -21,6 +21,7 @@ module Blink
         url      = ctx.resolve(url)
         timeout  = (cfg["timeout"]  || 30).to_i
         interval = (cfg["interval"] || 2).to_i
+        http_version = cfg["http_version"]
 
         if dry_run?(ctx)
           dry_log(ctx, "would poll #{url} (timeout: #{timeout}s)")
@@ -32,7 +33,7 @@ module Blink
 
         loop do
           result = ctx.target.capture(
-            "curl -sfk --max-time 5 --output /dev/null --write-out '%{http_code}' #{url} 2>/dev/null || echo 000"
+            "curl -sfk --max-time 5 #{curl_http_version_flag(http_version)} --output /dev/null --write-out '%{http_code}' #{url} 2>/dev/null || echo 000"
           )
           code = result.to_i
           if (200..299).cover?(code)
@@ -43,6 +44,14 @@ module Blink
           raise "Health check timed out after #{timeout}s waiting for #{url}" if Time.now >= deadline
 
           sleep interval
+        end
+      end
+
+      def curl_http_version_flag(http_version)
+        case http_version.to_s
+        when "1.1" then "--http1.1"
+        when "2" then "--http2"
+        else ""
         end
       end
     end

@@ -44,6 +44,20 @@ module Blink
         }
       },
       {
+        name: "blink_build",
+        description: "Build a service artifact using its declared source strategy (fetch/compile only — does not deploy). " \
+                     "Returns the local path to the built artifact on success.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            service: { type: "string",  description: "Service name from blink.toml" },
+            build:   { type: "string",  description: "Named build strategy to use (e.g. 'local_docker', 'github')" },
+            dry_run: { type: "boolean", description: "Preview without executing (default: false)" },
+          },
+          required: ["service"]
+        }
+      },
+      {
         name: "blink_deploy",
         description: "Deploy a service using its declared pipeline (fetch → stop → backup → install → start → health_check → verify). " \
                      "Automatically rolls back on failure. Returns per-step results and records a .blink history entry.",
@@ -264,6 +278,7 @@ module Blink
       case name
       when "blink_list_services" then tool_list_services(args)
       when "blink_plan"          then tool_plan(args)
+      when "blink_build"         then tool_build(args)
       when "blink_deploy"        then tool_deploy(args)
       when "blink_test"          then tool_test(args)
       when "blink_status"        then tool_status(args)
@@ -305,6 +320,43 @@ module Blink
         summary:             "Deploy #{service} via #{plan.pipeline.size}-step pipeline on #{plan.target["description"]}",
         suggested_next_step: "Run #{deploy_cmd} to execute this plan.",
         data:                plan.to_h
+      })
+    end
+
+    def tool_build(args)
+      service    = require_arg!(args, "service")
+      dry_run    = args.fetch("dry_run", false)
+      build_name = args["build"]
+
+      manifest = manifest_for_service(service)
+      runner   = Runner.new(manifest)
+
+      output, result = capture_output do
+        runner.run(
+          service,
+          operation:  "build",
+          dry_run:    dry_run,
+          json_mode:  false,
+          build_name: build_name
+        )
+      end
+
+      artifact = result.step_results
+                       .find { |s| s[:step] == "fetch_artifact" }
+                       &.dig(:output, "artifact_path")
+
+      next_step = if result.success?
+        dry_run ? "Run blink_build without dry_run=true to execute the build." \
+                : "Run blink_deploy with service='#{service}'#{build_name ? ", build='#{build_name}'" : ""} to deploy this artifact."
+      else
+        "Check the failed step '#{result.failed_at}'. Inspect the build command and retry with blink_build."
+      end
+
+      JSON.generate({
+        success:             result.success?,
+        summary:             result.summary,
+        suggested_next_step: next_step,
+        data:                result.to_h.merge(output: output, artifact_path: artifact, manifest: manifest.path)
       })
     end
 
