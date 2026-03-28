@@ -6,7 +6,7 @@ type = "local"
 
 [services.broken.source]
 type = "github_release"
-repo = "Bare-Labs/Blink"
+repo = "Bare-Systems/Blink"
 asset = "blink-linux-amd64"
 
 [services.broken.deploy]
