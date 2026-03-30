@@ -70,7 +70,12 @@ module Blink
           manifest = new(abs)
           manifests << manifest
           seen[manifest.path] = true
-          manifest.imported_paths.each { |imported_path| imported[imported_path] = true }
+          manifest.imported_paths.each do |imported_path|
+            imported[imported_path] = true
+            # If this path was loaded as a standalone manifest earlier in the
+            # workspace scan, remove it — it is now subsumed by this manifest.
+            manifests.reject! { |m| m.path == imported_path }
+          end
         rescue Error, TOML::ParseError
           next
         end

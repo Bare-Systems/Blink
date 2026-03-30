@@ -400,7 +400,7 @@ module Blink
       tags     = Array(args["tags"] || []).map(&:to_sym)
       list_only = args.fetch("list", false)
 
-      manifest = service ? manifest_for_service(service) : Manifest.load(start_dir: Dir.pwd)
+      manifest = service ? manifest_for_service(service) : workspace_manifest
       operation = Operations::TestRun.new(
         manifest: manifest,
         service_name: service,
@@ -446,7 +446,7 @@ module Blink
     end
 
     def tool_status(args)
-      manifest = args["service"] ? manifest_for_service(args["service"]) : Manifest.load(start_dir: Dir.pwd)
+      manifest = args["service"] ? manifest_for_service(args["service"]) : workspace_manifest
       result = Operations::Status.new(
         manifest: manifest,
         service_name: args["service"],
@@ -529,7 +529,7 @@ module Blink
     end
 
     def tool_ps(args)
-      manifest = Manifest.load(start_dir: Dir.pwd)
+      manifest = workspace_manifest
       details = Operations::Ps.new(manifest: manifest, target_name: args["target"]).call
 
       JSON.generate({
@@ -567,7 +567,7 @@ module Blink
     end
 
     def tool_state(args)
-      manifest = args["service"] ? manifest_for_service(args["service"]) : Manifest.load(start_dir: Dir.pwd)
+      manifest = args["service"] ? manifest_for_service(args["service"]) : workspace_manifest
       details = Operations::State.new(manifest: manifest, service_name: args["service"]).call
 
       JSON.generate({
@@ -586,7 +586,7 @@ module Blink
     end
 
     def tool_history(args)
-      manifest = args["service"] ? manifest_for_service(args["service"]) : Manifest.load(start_dir: Dir.pwd)
+      manifest = args["service"] ? manifest_for_service(args["service"]) : workspace_manifest
       details = Operations::History.new(
         manifest: manifest,
         service_name: args["service"],
@@ -640,7 +640,7 @@ module Blink
     end
 
     def tool_doctor(args)
-      manifest = Manifest.load
+      manifest = workspace_manifest
       result = Operations::Doctor.new(manifest: manifest, target_name: args["target"]).call
 
       next_step = if result[:failed] > 0
@@ -668,6 +668,16 @@ module Blink
 
     def manifest_for_service(service_name)
       Manifest.load_for_service!(service_name, start_dir: Dir.pwd)
+    end
+
+    # Load the primary workspace manifest. Falls back to discover_all when
+    # Dir.pwd is not within a project (e.g. when the MCP server runs from /).
+    def workspace_manifest
+      Manifest.load(start_dir: Dir.pwd)
+    rescue Manifest::Error
+      manifests = Manifest.discover_all(start_dir: Dir.pwd)
+      raise Manifest::Error, "No blink.toml found" if manifests.empty?
+      manifests.max_by { |m| m.service_names.size }
     end
 
     # Run a block, capture all stdout, strip ANSI codes, and return
