@@ -716,6 +716,11 @@ module Blink
         if env_file["seed"] && !env_file["seed"].is_a?(Hash)
           error("#{path}.env_file.seed", "provision.env_file.seed must be a TOML table.")
         end
+        if env_file["always_update"]
+          unless env_file["always_update"].is_a?(Array) && env_file["always_update"].all? { |v| v.is_a?(String) }
+            error("#{path}.env_file.always_update", "provision.env_file.always_update must be an array of strings.")
+          end
+        end
       end
 
       def validate_docker(cfg, path)

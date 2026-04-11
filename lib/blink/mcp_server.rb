@@ -64,11 +64,13 @@ module Blink
         inputSchema: {
           type: "object",
           properties: {
-            service: { type: "string",  description: "Service name from blink.toml" },
-            target:  { type: "string",  description: "Override the target declared in blink.toml" },
-            version: { type: "string",  description: "Release version to deploy (default: latest)" },
-            build:   { type: "string",  description: "Named build to select when source defines multiple builds (e.g. 'linux-amd64')" },
-            dry_run: { type: "boolean", description: "Preview pipeline without executing (default: false)" },
+            service:     { type: "string",  description: "Service name from blink.toml" },
+            target:      { type: "string",  description: "Override the target declared in blink.toml" },
+            version:     { type: "string",  description: "Release version to deploy (default: latest)" },
+            build:       { type: "string",  description: "Named build to select when source defines multiple builds (e.g. 'linux-amd64')" },
+            dry_run:     { type: "boolean", description: "Preview pipeline without executing (default: false)" },
+            skip_build:  { type: "boolean", description: "Skip the fetch_artifact/build step and use the most recently cached artifact (default: false). " \
+                                                          "Use this when the image is already in the registry from a prior blink_build call." },
           },
           required: ["service"]
         }
@@ -361,10 +363,11 @@ module Blink
     end
 
     def tool_deploy(args)
-      service    = require_arg!(args, "service")
-      dry_run    = args.fetch("dry_run", false)
-      version    = args.fetch("version", "latest")
-      build_name = args["build"]
+      service     = require_arg!(args, "service")
+      dry_run     = args.fetch("dry_run", false)
+      version     = args.fetch("version", "latest")
+      build_name  = args["build"]
+      skip_build  = args.fetch("skip_build", false)
 
       manifest = manifest_for_service(service)
       runner   = Runner.new(manifest)
@@ -376,7 +379,8 @@ module Blink
           dry_run:     dry_run,
           json_mode:   false,
           version:     version,
-          build_name:  build_name
+          build_name:  build_name,
+          skip_build:  skip_build
         )
       end
 

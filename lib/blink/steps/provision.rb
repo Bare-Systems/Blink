@@ -42,6 +42,8 @@ module Blink
           dry_log(ctx, "would create dirs: #{dirs.join(", ")}") unless dirs.empty?
           if env_file
             dry_log(ctx, "would seed env_file (if new): #{ctx.resolve(env_file["path"] || "")}")
+            always_update = Array(env_file["always_update"]).compact
+            dry_log(ctx, "would force-sync keys: #{always_update.join(", ")}") unless always_update.empty?
           end
           dry_log(ctx, "would run provision script (inline)") if script
           return
@@ -57,16 +59,36 @@ module Blink
         # 2. Seed env file — only if it does not yet exist on the remote.
         #    Values are written as KEY=value lines. After the first deploy the
         #    operator fills in real secrets; subsequent deploys leave it alone.
+        #
+        #    Keys listed in always_update are force-synced on every deploy even
+        #    when the file already exists. Use this for tokens and URLs that must
+        #    stay consistent across services (e.g. KOALA_MCP_TOKEN).
         if env_file
-          path = ctx.resolve(env_file["path"] || raise(Manifest::Error, "provision.env_file.path is required"))
-          seed = env_file["seed"] || {}
+          path         = ctx.resolve(env_file["path"] || raise(Manifest::Error, "provision.env_file.path is required"))
+          seed         = env_file["seed"] || {}
+          escaped_path = Shellwords.escape(path)
+
           unless seed.empty?
-            lines   = seed.map { |k, v| "#{k}=#{expand_env_refs(v.to_s)}" }.join("\n") + "\n"
-            escaped_path    = Shellwords.escape(path)
+            lines           = seed.map { |k, v| "#{k}=#{expand_env_refs(v.to_s)}" }.join("\n") + "\n"
             escaped_content = Shellwords.escape(lines)
             # Use `test -f` so we never clobber a file that already has real secrets.
             ctx.target.run("test -f #{escaped_path} || printf #{escaped_content} > #{escaped_path}")
             Output.info("Env file seeded (if new): #{path}")
+          end
+
+          # Force-sync specific keys on every deploy, even if the file already exists.
+          # Strip-and-append is used so special chars in values (base64, +/=) are safe.
+          Array(env_file["always_update"]).compact.each do |key|
+            raw = seed[key]
+            next unless raw
+
+            value        = expand_env_refs(raw.to_s)
+            escaped_line = Shellwords.escape("#{key}=#{value}")
+            escaped_key  = Shellwords.escape("^#{key}=")
+            ctx.target.run(
+              "{ grep -v #{escaped_key} #{escaped_path} 2>/dev/null || true; printf #{escaped_line}; printf '\\n'; } > #{escaped_path}.swp && mv #{escaped_path}.swp #{escaped_path}"
+            )
+            Output.info("Env file synced #{key} → #{path}")
           end
         end
 

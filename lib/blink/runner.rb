@@ -33,13 +33,29 @@ module Blink
     # json_mode:    emit machine-readable JSON output
     # version:      artifact version ("latest" or a tag string)
     # build_name:   named build to use (multi-build local_build source)
-    def run(service_name, operation: "deploy", target_name: nil, dry_run: false, json_mode: false, version: "latest", build_name: nil)
+    def run(service_name, operation: "deploy", target_name: nil, dry_run: false, json_mode: false, version: "latest", build_name: nil, skip_build: false)
       svc    = @manifest.service!(service_name)
       target = @registry.target_for(service_name, operation: operation, override: target_name)
       plan   = @planner.build(service_name, operation: operation, target_name: target_name, build_name: build_name)
 
       pipeline = plan.pipeline
       rollback = plan.rollback
+
+      # When skip_build is requested, drop fetch_artifact from the pipeline and
+      # seed ctx.artifact_path from the most recent successful deploy in state.
+      cached_artifact_path = nil
+      if skip_build
+        pipeline = pipeline.reject { |step| step == "fetch_artifact" }
+        state = Lock.current_state(@manifest)
+        cached_artifact_path = state.dig("services", service_name, "last_deploy", "artifact", "path")
+        unless json_mode
+          if cached_artifact_path
+            Output.info("skip_build: using cached artifact #{cached_artifact_path}")
+          else
+            Output.info("skip_build: no previous artifact in state — proceeding without artifact_path")
+          end
+        end
+      end
 
       ctx = Steps::StepContext.new(
         manifest:      @manifest,
@@ -49,7 +65,7 @@ module Blink
         json_mode:     json_mode,
         version:       version,
         build_name:    build_name,
-        artifact_path: nil,
+        artifact_path: cached_artifact_path,
         backup_path:   nil
       )
 
