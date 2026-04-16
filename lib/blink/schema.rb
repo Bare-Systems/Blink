@@ -4,23 +4,16 @@ require "pathname"
 
 module Blink
   class Schema
+    # Target types are structural — Schema validates their config shape
+    # directly — so this list is hand-maintained rather than registry-derived.
     KNOWN_TARGET_TYPES = %w[local ssh].freeze
-    KNOWN_SOURCE_TYPES = %w[containerized_local_build github_release local_build url].freeze
-    KNOWN_INLINE_TEST_TYPES = %w[api http shell mcp ui script].freeze
-    KNOWN_STEPS = %w[
-      fetch_artifact
-      stop
-      backup
-      install
-      start
-      health_check
-      verify
-      rollback
-      shell
-      remote_script
-      docker
-      provision
-    ].freeze
+    SECRET_KEY_PATTERN = /(token|secret|password|api[_-]?key|authorization|webhook|private[_-]?key)/i.freeze
+    ENV_REF_ONLY_PATTERN = /\A\$\{[A-Z0-9_]+\}\z/.freeze
+
+    # Source types and inline test types are derived from their runtime
+    # registries (`Blink::Sources::REGISTRY`, `Blink::Testing::InlineRunner::REGISTRY`)
+    # so plugins can extend the manifest vocabulary without touching Schema.
+    # See `known_source_types`, `known_inline_test_types`, `known_steps` below.
 
     Issue = Struct.new(:path, :message, :severity, keyword_init: true) do
       def to_h
@@ -255,7 +248,7 @@ module Blink
         end
 
         env.each do |key, value|
-          error("#{path}.env.#{key}", "target env values must be strings.") unless stringish?(value)
+          validate_env_value("#{path}.env.#{key}", key, value, label: "target env")
         end
       end
 
@@ -315,8 +308,8 @@ module Blink
           return
         end
 
-        unless KNOWN_SOURCE_TYPES.include?(type)
-          error("#{path}.type", "Unknown source type #{type.inspect}. Supported types: #{KNOWN_SOURCE_TYPES.join(', ')}.")
+        unless known_source_types.include?(type)
+          error("#{path}.type", "Unknown source type #{type.inspect}. Supported types: #{known_source_types.join(', ')}.")
           return
         end
 
@@ -405,7 +398,7 @@ module Blink
         end
 
         env.each do |key, value|
-          error("#{path}.env.#{key}", "source env values must be strings.") unless stringish?(value)
+          validate_env_value("#{path}.env.#{key}", key, value, label: "source env")
         end
       end
 
@@ -568,8 +561,8 @@ module Blink
             next
           end
 
-          unless KNOWN_INLINE_TEST_TYPES.include?(type)
-            error("#{test_path}.type", "Unknown inline test type #{type.inspect}. Supported types: #{KNOWN_INLINE_TEST_TYPES.join(', ')}.")
+          unless known_inline_test_types.include?(type)
+            error("#{test_path}.type", "Unknown inline test type #{type.inspect}. Supported types: #{known_inline_test_types.join(', ')}.")
             next
           end
 
@@ -603,6 +596,8 @@ module Blink
         optional_string(spec, "#{path}.selector") if spec.key?("selector")
         optional_string(spec, "#{path}.selector_type") if spec.key?("selector_type")
         optional_string(spec, "#{path}.expect_text") if spec.key?("expect_text")
+        optional_boolean(spec, "#{path}.tls_insecure") if spec.key?("tls_insecure")
+        warn(path, "tls_insecure = true — TLS verification disabled for this test.") if spec["tls_insecure"] == true
       end
 
       def validate_inline_checks(checks, path, test_type:)
@@ -716,6 +711,11 @@ module Blink
         if env_file["seed"] && !env_file["seed"].is_a?(Hash)
           error("#{path}.env_file.seed", "provision.env_file.seed must be a TOML table.")
         end
+        if env_file["seed"].is_a?(Hash)
+          env_file["seed"].each do |key, value|
+            validate_env_value("#{path}.env_file.seed.#{key}", key, value, label: "provision env_file seed")
+          end
+        end
         if env_file["always_update"]
           unless env_file["always_update"].is_a?(Array) && env_file["always_update"].all? { |v| v.is_a?(String) }
             error("#{path}.env_file.always_update", "provision.env_file.always_update must be an array of strings.")
@@ -790,6 +790,27 @@ module Blink
         value.is_a?(Array) && value.all? { |item| stringish?(item) }
       end
 
+      def validate_env_value(path, key, value, label:)
+        unless stringish?(value)
+          error(path, "#{label} values must be strings.")
+          return
+        end
+
+        return unless secretish_key?(key)
+        return if env_ref_only?(value)
+
+        suggested = key.to_s.upcase.gsub(/[^A-Z0-9]+/, "_")
+        error(path, "#{label} secret values must use an env reference like ${#{suggested}} instead of a hardcoded literal.")
+      end
+
+      def secretish_key?(key)
+        key.to_s.match?(SECRET_KEY_PATTERN)
+      end
+
+      def env_ref_only?(value)
+        value.to_s.match?(ENV_REF_ONLY_PATTERN)
+      end
+
       def stringish?(value)
         value.is_a?(String) && !value.strip.empty?
       end
@@ -799,8 +820,15 @@ module Blink
       end
 
       def known_steps
-        registry_steps = defined?(Blink::Steps::REGISTRY) ? Blink::Steps::REGISTRY.keys : []
-        (KNOWN_STEPS + registry_steps).uniq.sort
+        (defined?(Blink::Steps::REGISTRY) ? Blink::Steps::REGISTRY.keys : []).sort
+      end
+
+      def known_source_types
+        (defined?(Blink::Sources::REGISTRY) ? Blink::Sources::REGISTRY.keys : []).sort
+      end
+
+      def known_inline_test_types
+        (defined?(Blink::Testing::InlineRunner::REGISTRY) ? Blink::Testing::InlineRunner::REGISTRY.keys : []).sort
       end
 
       def validate_multi_source(service_name, source, path)

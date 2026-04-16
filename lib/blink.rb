@@ -4,10 +4,13 @@
 require_relative "blink/version"
 require_relative "blink/output"
 require_relative "blink/response"
+require_relative "blink/runtime"
+require_relative "blink/env_refs"
 require_relative "blink/toml"
 require_relative "blink/ssh"
 require_relative "blink/schema"
 require_relative "blink/manifest"
+require_relative "blink/http/adapter"
 
 # ── Targets ───────────────────────────────────────────────────────────────────
 require_relative "blink/targets/base"
@@ -54,6 +57,7 @@ require_relative "blink/plan"
 require_relative "blink/planner"
 
 # ── Commands ──────────────────────────────────────────────────────────────────
+require_relative "blink/commands/base"
 require_relative "blink/commands/init"
 require_relative "blink/commands/build"
 require_relative "blink/commands/deploy"

@@ -220,5 +220,7 @@ module Blink
         raise_source_error("field #{key} is required", Manifest::Error)
       end
     end
+
+    register("containerized_local_build", ContainerizedLocalBuild)
   end
 end

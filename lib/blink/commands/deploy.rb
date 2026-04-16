@@ -1,13 +1,10 @@
 # frozen_string_literal: true
 
 require "json"
-require "stringio"
 
 module Blink
   module Commands
-    class Deploy
-      ANSI_STRIP = /\e\[[0-9;]*[mGKHF]/.freeze
-
+    class Deploy < Base
       def initialize(argv)
         @argv     = argv.dup
         @service  = @argv.shift
@@ -50,26 +47,10 @@ module Blink
 
         run_one(manifest, @service)
       rescue Manifest::Error => e
-        if @json
-          puts Response.dump(
-            success: false,
-            summary: e.message,
-            details: { service: @service, error: e.message },
-            next_steps: ["Fix the manifest or service configuration and rerun the deploy."]
-          )
-          exit 1
-        end
+        emit_exception_and_exit(e, service: @service, next_steps: ["Fix the manifest or service configuration and rerun the deploy."]) if @json
         Output.fatal(e.message)
-      rescue SSHError => e
-        if @json
-          puts Response.dump(
-            success: false,
-            summary: "SSH error: #{e.message}",
-            details: { service: @service, error: e.message },
-            next_steps: ["Check target connectivity with `blink doctor` and retry."]
-          )
-          exit 1
-        end
+      rescue TargetError => e
+        emit_exception_and_exit(e, service: @service, prefix: "SSH error", next_steps: ["Check target connectivity with `blink doctor` and retry."]) if @json
         Output.fatal("SSH error: #{e.message}")
       end
 
@@ -179,21 +160,6 @@ module Blink
         puts "  #{Output::BOLD}--build NAME#{Output::RESET}     Select a named build (multi-build source only)"
         puts "  #{Output::BOLD}--dry-run#{Output::RESET}        Show what would happen without executing"
         puts "  #{Output::BOLD}--json#{Output::RESET}           Emit machine-readable JSON output"
-      end
-
-      def capture_output
-        old_stdout = $stdout
-        old_stderr = $stderr
-        captured_out = StringIO.new
-        captured_err = StringIO.new
-        $stdout = captured_out
-        $stderr = captured_err
-        result = yield
-        output = [captured_out.string, captured_err.string].reject(&:empty?).join.gsub(ANSI_STRIP, "")
-        [output, result]
-      ensure
-        $stdout = old_stdout
-        $stderr = old_stderr
       end
 
       def next_steps_for(result, service = @service)

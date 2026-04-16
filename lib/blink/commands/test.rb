@@ -67,7 +67,7 @@ module Blink
           puts Response.dump(
             success: result.success?,
             summary: summary_for(result),
-            details: result.to_h.merge(service: @service, target: run[:target]),
+            details: result.to_h.merge(service: @service, target: run[:target], service_results: run[:service_results]),
             next_steps: next_steps_for(result)
           )
         else

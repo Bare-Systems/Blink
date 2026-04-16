@@ -28,14 +28,14 @@ module Blink
       def run(cmd, abort_on_failure: true, tty: false)
         opts    = tty ? [*SSH_OPTS, "-t"] : SSH_OPTS
         success = system("ssh", *opts, ssh_host, decorate_command(cmd))
-        raise SSHError, "Remote command failed: #{cmd.lines.first.chomp}" if !success && abort_on_failure
+        raise SSHTargetError, "Remote command failed: #{cmd.lines.first.chomp}" if !success && abort_on_failure
         success
       end
 
       # Run a command and return stdout. Raises SSHError on non-zero exit.
       def capture(cmd)
         out, err, status = Open3.capture3("ssh", *SSH_OPTS, ssh_host, decorate_command(cmd))
-        raise SSHError, "Remote capture failed: #{err.strip}" unless status.success?
+        raise SSHTargetError, "Remote capture failed: #{err.strip}" unless status.success?
         out.strip
       end
 
@@ -44,18 +44,18 @@ module Blink
         out, err, status = Open3.capture3("ssh", *SSH_OPTS, ssh_host, "bash", "-s", stdin_data: decorate_script(bash))
         print out unless out.empty?
         $stderr.print err unless err.empty?
-        raise SSHError, "Remote script failed" if !status.success? && abort_on_failure
+        raise SSHTargetError, "Remote script failed" if !status.success? && abort_on_failure
         status.success?
       end
 
       def upload(local_path, remote_path)
         success = system("scp", *SSH_OPTS, local_path.to_s, "#{ssh_host}:#{remote_path}")
-        raise SSHError, "scp upload failed: #{local_path} → #{remote_path}" unless success
+        raise SSHTargetError, "scp upload failed: #{local_path} → #{remote_path}" unless success
       end
 
       def download(remote_path, local_path)
         success = system("scp", *SSH_OPTS, "#{ssh_host}:#{remote_path}", local_path.to_s)
-        raise SSHError, "scp download failed: #{remote_path} → #{local_path}" unless success
+        raise SSHTargetError, "scp download failed: #{remote_path} → #{local_path}" unless success
       end
 
       def reachable?

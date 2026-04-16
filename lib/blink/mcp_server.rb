@@ -19,7 +19,41 @@ module Blink
   class MCPServer
     PROTOCOL_VERSION = "2024-11-05"
 
-    TOOLS = [
+    # Shared result envelope schema. All tools return the same shape:
+    #   { success:, summary:, suggested_next_step:, data: }
+    # `data` is tool-specific, so it's left as a permissive object.
+    OUTPUT_SCHEMA = {
+      type: "object",
+      properties: {
+        success:             { type: "boolean", description: "Whether the tool call succeeded operationally." },
+        summary:             { type: "string",  description: "Short human-readable summary." },
+        suggested_next_step: { type: "string",  description: "What the caller should do next." },
+        data:                { type: "object",  description: "Tool-specific structured payload." }
+      },
+      required: ["success", "summary", "data"],
+      additionalProperties: true
+    }.freeze
+
+    # Per-tool MCP annotations — help LLM-side planning by marking tools as
+    # read-only, idempotent, or destructive.
+    TOOL_ANNOTATIONS = {
+      "blink_list_services" => { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+      "blink_plan"          => { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+      "blink_steps"         => { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+      "blink_state"         => { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+      "blink_history"       => { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+      "blink_status"        => { readOnlyHint: true, idempotentHint: true, openWorldHint: true  },
+      "blink_logs"          => { readOnlyHint: true, idempotentHint: true, openWorldHint: true  },
+      "blink_ps"            => { readOnlyHint: true, idempotentHint: true, openWorldHint: true  },
+      "blink_doctor"        => { readOnlyHint: true, idempotentHint: true, openWorldHint: true  },
+      "blink_test"          => { readOnlyHint: true, idempotentHint: false, openWorldHint: true },
+      "blink_build"         => { readOnlyHint: false, idempotentHint: true, destructiveHint: false, openWorldHint: true },
+      "blink_deploy"        => { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: true },
+      "blink_rollback"      => { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: true },
+      "blink_restart"       => { readOnlyHint: false, idempotentHint: true, destructiveHint: false, openWorldHint: true }
+    }.freeze
+
+    BASE_TOOLS = [
       {
         name: "blink_list_services",
         description: "List all services declared in blink.toml with their description and configured pipeline.",
@@ -201,6 +235,16 @@ module Blink
       },
     ].freeze
 
+    # Decorate each base tool definition with the shared outputSchema and its
+    # per-tool annotations. This is what's returned by `tools/list`.
+    TOOLS = BASE_TOOLS.map do |tool|
+      annotations = TOOL_ANNOTATIONS[tool[:name]] || {}
+      tool.merge(
+        outputSchema: OUTPUT_SCHEMA,
+        annotations: annotations
+      ).freeze
+    end.freeze
+
     def run
       $stdout.sync = true
       $stderr.sync = true
@@ -259,19 +303,71 @@ module Blink
       when "tools/call"
         tool_name = params["name"]
         arguments = params["arguments"] || {}
-        log("tool call: #{tool_name}  args=#{arguments.inspect}")
+        log("tool call: #{tool_name}  args=#{redact_args(arguments).inspect}")
 
-        text = call_tool(tool_name, arguments)
-        ok_response(id, { content: [{ type: "text", text: text }] })
+        begin
+          text = call_tool(tool_name, arguments)
+          ok_response(id, tool_result(text))
+        rescue Manifest::Error => e
+          # Per MCP spec: operational failures are reported inside the tool
+          # result as `isError: true`, not as JSON-RPC protocol errors. This
+          # lets the calling LLM see the message and self-correct.
+          ok_response(id, tool_error_result("Manifest error: #{e.message}"))
+        rescue => e
+          log("tool error: #{e.class}: #{e.message}")
+          ok_response(id, tool_error_result("Tool error: #{e.message}"))
+        end
 
       else
         error_response(id, -32_601, "Method not found: #{method}")
       end
-    rescue Manifest::Error => e
-      error_response(id, -32_602, "Manifest error: #{e.message}")
     rescue => e
-      log("tool error: #{e.class}: #{e.message}")
-      error_response(id, -32_603, "Tool error: #{e.message}")
+      # Protocol-level failures (malformed dispatch etc.) — keep JSON-RPC errors
+      # reserved for these genuinely exceptional cases.
+      log("dispatch error: #{e.class}: #{e.message}")
+      error_response(id, -32_603, "Internal error: #{e.message}")
+    end
+
+    # Wrap a tool's JSON-string payload into an MCP CallToolResult.
+    #
+    # For backward compatibility we still emit the full JSON string inside a
+    # text content block. Additionally we expose `structuredContent` (the
+    # parsed payload) and `isError` so modern MCP clients can consume the
+    # machine-parseable form without re-parsing a string.
+    def tool_result(json_text)
+      parsed = safe_parse_json(json_text)
+      is_error = parsed.is_a?(Hash) && parsed["success"] == false
+      summary = parsed.is_a?(Hash) ? parsed["summary"].to_s : "tool result"
+      {
+        content:           [{ type: "text", text: json_text }],
+        structuredContent: parsed,
+        isError:           is_error,
+        _meta:             { summary: summary }
+      }
+    end
+
+    def tool_error_result(message)
+      {
+        content:           [{ type: "text", text: message }],
+        structuredContent: { "success" => false, "summary" => message, "data" => {} },
+        isError:           true
+      }
+    end
+
+    def safe_parse_json(text)
+      JSON.parse(text)
+    rescue JSON::ParserError
+      { "success" => false, "summary" => "tool emitted non-JSON text", "data" => { "raw" => text } }
+    end
+
+    # Redact tokens/headers from logged tool arguments. Protects against leaking
+    # secrets from stderr when an MCP client is configured with credentials.
+    REDACT_KEYS = /token|secret|password|authorization|api[_-]?key/i
+    def redact_args(args)
+      return args unless args.is_a?(Hash)
+      args.each_with_object({}) do |(k, v), out|
+        out[k] = k.to_s.match?(REDACT_KEYS) ? "[REDACTED]" : v
+      end
     end
 
     # ── Tool dispatch ────────────────────────────────────────────────────────
@@ -445,7 +541,7 @@ module Blink
         success:             result.success?,
         summary:             "#{result.passed}/#{result.total} passed#{result.failed > 0 ? ", #{result.failed} failed" : ""}",
         suggested_next_step: next_step,
-        data:                result.to_h.merge(manifest: manifest.path, target: run[:target], service: service)
+        data:                result.to_h.merge(manifest: manifest.path, target: run[:target], service: service, service_results: run[:service_results])
       })
     end
 
@@ -684,21 +780,10 @@ module Blink
       manifests.max_by { |m| m.service_names.size }
     end
 
-    # Run a block, capture all stdout, strip ANSI codes, and return
-    # [plain_string, block_return_value].
-    ANSI_STRIP = /\e\[[0-9;]*[mGKHF]/
-
-    def capture_output
-      old_stdout = $stdout
-      $stdout    = StringIO.new
-      result     = yield
-      raw        = $stdout.string.encode("UTF-8", invalid: :replace, undef: :replace, replace: "")
-      $stdout    = old_stdout
-      plain      = raw.gsub(ANSI_STRIP, "")
-      [plain, result]
-    rescue => e
-      $stdout = old_stdout if old_stdout
-      raise e
+    # Delegate to the shared Runtime helper. MCP only captures stdout so its
+    # stderr log channel stays live during tool calls.
+    def capture_output(&block)
+      Runtime.capture_output(capture_stderr: false, &block)
     end
 
     def ok_response(id, result)

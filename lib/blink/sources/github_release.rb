@@ -192,5 +192,7 @@ module Blink
         "#{(b / 1_024.0**2).round(1)} MB"
       end
     end
+
+    register("github_release", GithubRelease)
   end
 end

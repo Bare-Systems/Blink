@@ -12,6 +12,7 @@ module Blink
     CURRENT_STATE = File.join(BLINK_DIR, "state", "current.json")
     RECENT_RUNS = File.join(BLINK_DIR, "state", "recent_runs.json")
     HISTORY_DIR = File.join(BLINK_DIR, "history")
+    LOCK_FILE = File.join(BLINK_DIR, ".lock")
     DEFAULT_RETENTION = 100
 
     def self.record(manifest, result, ctx, started_at, plan: nil)
@@ -46,23 +47,48 @@ module Blink
 
     def self.persist(manifest, entry)
       ensure_dirs(manifest.dir)
+
+      # Per-run history file is uniquely named — safe to write outside the lock.
       write_json(history_path(manifest.dir, entry["run_id"]), entry)
 
-      recent = load_json(File.join(manifest.dir, RECENT_RUNS), default: [])
-      recent.unshift(recent_summary(entry))
-      recent = recent.uniq { |item| item["run_id"] }
+      # Shared state files (recent_runs.json, current.json) are read-modify-written.
+      # Hold an exclusive flock so concurrent Blink processes (parallel deploy
+      # threads, multiple operators) don't clobber each other. The read happens
+      # INSIDE the lock so we never merge against a stale snapshot.
+      trimmed = nil
+      with_state_lock(manifest.dir) do
+        recent = load_json(File.join(manifest.dir, RECENT_RUNS), default: [])
+        recent.unshift(recent_summary(entry))
+        recent = recent.uniq { |item| item["run_id"] }
 
-      retention = retention_limit(manifest)
-      trimmed = recent.first(retention)
-      write_json(File.join(manifest.dir, RECENT_RUNS), trimmed)
+        retention = retention_limit(manifest)
+        trimmed = recent.first(retention)
+        write_json(File.join(manifest.dir, RECENT_RUNS), trimmed)
 
-      current = load_json(File.join(manifest.dir, CURRENT_STATE), default: { "updated_at" => nil, "services" => {} })
-      update_current_state(current, entry)
-      write_json(File.join(manifest.dir, CURRENT_STATE), current)
+        current = load_json(File.join(manifest.dir, CURRENT_STATE), default: { "updated_at" => nil, "services" => {} })
+        update_current_state(current, entry)
+        write_json(File.join(manifest.dir, CURRENT_STATE), current)
+      end
 
       prune_history(manifest.dir, trimmed)
     end
     private_class_method :persist
+
+    # Hold an exclusive OS-level file lock for the duration of the block.
+    # The lockfile lives at `.blink/.lock`; threads within one process and
+    # separate Blink processes both serialize through it.
+    def self.with_state_lock(base_dir)
+      FileUtils.mkdir_p(File.join(base_dir, BLINK_DIR))
+      File.open(File.join(base_dir, LOCK_FILE), File::RDWR | File::CREAT, 0o644) do |lockfile|
+        lockfile.flock(File::LOCK_EX)
+        begin
+          yield
+        ensure
+          lockfile.flock(File::LOCK_UN)
+        end
+      end
+    end
+    private_class_method :with_state_lock
 
     def self.current_state(manifest)
       load_json(File.join(base_dir(manifest), CURRENT_STATE), default: { "updated_at" => nil, "services" => {} })
@@ -355,8 +381,25 @@ module Blink
     end
     private_class_method :load_json
 
+    # Atomic write: serialize to a sibling tmp file, fsync, then rename into place.
+    # Rename on POSIX is atomic, so readers never see a half-written JSON document.
+    # A unique suffix on the tmp file keeps concurrent writers from colliding on the
+    # tmp path (they still serialize at the shared-state level via `with_state_lock`,
+    # but per-run history writes happen outside that lock).
     def self.write_json(path, payload)
-      File.write(path, JSON.pretty_generate(payload) + "\n")
+      FileUtils.mkdir_p(File.dirname(path))
+      tmp = "#{path}.tmp.#{Process.pid}.#{SecureRandom.hex(4)}"
+      File.open(tmp, "w") do |f|
+        f.write(JSON.pretty_generate(payload) + "\n")
+        f.fsync
+      end
+      File.rename(tmp, path)
+    ensure
+      begin
+        File.unlink(tmp) if tmp && File.exist?(tmp)
+      rescue Errno::ENOENT
+        # Raced with another cleanup; nothing to do.
+      end
     end
     private_class_method :write_json
 

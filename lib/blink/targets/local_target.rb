@@ -9,13 +9,13 @@ module Blink
     class LocalTarget < Base
       def run(cmd, abort_on_failure: true, tty: false)
         success = system(environment, cmd)
-        raise SSHError, "Local command failed: #{cmd.lines.first.chomp}" if !success && abort_on_failure
+        raise LocalTargetError, "Local command failed: #{cmd.lines.first.chomp}" if !success && abort_on_failure
         success
       end
 
       def capture(cmd)
         out, err, status = Open3.capture3(environment, cmd)
-        raise SSHError, "Local capture failed: #{err.strip}" unless status.success?
+        raise LocalTargetError, "Local capture failed: #{err.strip}" unless status.success?
         out.strip
       end
 
@@ -28,7 +28,7 @@ module Blink
         out, err, status = Open3.capture3(environment, "bash", "-s", stdin_data: bash)
         print out unless out.empty?
         $stderr.print err unless err.empty?
-        raise SSHError, "Local script failed" if !status.success? && abort_on_failure
+        raise LocalTargetError, "Local script failed" if !status.success? && abort_on_failure
         status.success?
       end
 

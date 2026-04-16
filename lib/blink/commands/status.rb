@@ -76,7 +76,7 @@ module Blink
           exit 1
         end
         Output.fatal(e.message)
-      rescue SSHError => e
+      rescue TargetError => e
         if @json
           puts Response.dump(
             success: false,
@@ -107,7 +107,7 @@ module Blink
             puts "  #{Output::YELLOW}#{line}#{Output::RESET}"
           end
         end
-      rescue SSHError
+      rescue TargetError
         Output.warn("  Docker not reachable")
       end
     end

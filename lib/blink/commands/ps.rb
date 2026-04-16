@@ -60,7 +60,7 @@ module Blink
           exit 1
         end
         Output.fatal(e.message)
-      rescue SSHError => e
+      rescue TargetError => e
         if @json
           puts Response.dump(
             success: false,

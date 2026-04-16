@@ -1,13 +1,10 @@
 # frozen_string_literal: true
 
 require "json"
-require "stringio"
 
 module Blink
   module Commands
-    class Build
-      ANSI_STRIP = /\e\[[0-9;]*[mGKHF]/.freeze
-
+    class Build < Base
       def initialize(argv)
         @argv    = argv.dup
         @service = @argv.shift
@@ -71,26 +68,10 @@ module Blink
           exit 1
         end
       rescue Manifest::Error => e
-        if @json
-          puts Response.dump(
-            success:    false,
-            summary:    e.message,
-            details:    { service: @service, error: e.message },
-            next_steps: ["Fix the manifest or service configuration and retry."]
-          )
-          exit 1
-        end
+        emit_exception_and_exit(e, service: @service, next_steps: ["Fix the manifest or service configuration and retry."]) if @json
         Output.fatal(e.message)
-      rescue SSHError => e
-        if @json
-          puts Response.dump(
-            success:    false,
-            summary:    "SSH error: #{e.message}",
-            details:    { service: @service, error: e.message },
-            next_steps: ["Check target connectivity with `blink doctor` and retry."]
-          )
-          exit 1
-        end
+      rescue TargetError => e
+        emit_exception_and_exit(e, service: @service, prefix: "SSH error", next_steps: ["Check target connectivity with `blink doctor` and retry."]) if @json
         Output.fatal("SSH error: #{e.message}")
       end
 
@@ -119,18 +100,6 @@ module Blink
         end
       end
 
-      def capture_output
-        old_stdout = $stdout
-        old_stderr = $stderr
-        captured   = StringIO.new
-        $stdout    = captured
-        result     = yield
-        output     = captured.string.gsub(ANSI_STRIP, "")
-        [output, result]
-      ensure
-        $stdout = old_stdout
-        $stderr = old_stderr
-      end
     end
   end
 end

@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "shellwords"
-
 module Blink
   module Testing
     # Lightweight HTTP response value object.
@@ -17,9 +15,13 @@ module Blink
     # Running curl on the target ensures tests work against the service's
     # loopback interface, regardless of whether the host is directly
     # reachable from the developer's machine.
+    #
+    # TLS verification defaults to ON. Inline tests targeting self-signed
+    # endpoints must set `tls_insecure: true` in their TOML config.
     class HTTP
-      def initialize(target)
+      def initialize(target, tls_insecure: false)
         @target = target
+        @tls_insecure = tls_insecure
       end
 
       def get(url, headers: {}, host: nil, http_version: nil)
@@ -41,17 +43,15 @@ module Blink
       end
 
       def request(method, url, body: nil, headers: {}, head_only: false, http_version: nil)
-        parts = %w[curl -sk --max-time 10 -i] + ["-X", method]
-        parts << "--http1.1" if http_version.to_s == "1.1"
-        parts << "--http2" if http_version.to_s == "2"
-        headers.each { |k, v| parts += ["-H", "#{k}: #{v}"] }
-        if body
-          parts += ["-H", "Content-Type: application/json"] unless headers.key?("Content-Type")
-          parts += ["--data-raw", body]
-        end
-        parts << url
-
-        cmd = parts.map { |p| Shellwords.escape(p) }.join(" ")
+        cmd = Blink::HTTP::Adapter.request_command(
+          method, url,
+          body:         body,
+          headers:      headers,
+          http_version: http_version,
+          tls_insecure: @tls_insecure,
+          max_time:     10,
+          include_headers: true
+        )
         raw = @target.capture(cmd)
         parse(raw)
       rescue => e

@@ -11,6 +11,21 @@ require "time"
 
 module Blink
   module Sources
+    # Registry of source type name → class. Plugins and built-in sources alike
+    # call `Blink::Sources.register("my_type", MySource)` to make their type
+    # available to the manifest schema and `Sources.build`.
+    REGISTRY = {}
+
+    # Register a source class under the given manifest type name.
+    def self.register(type, klass)
+      REGISTRY[type.to_s] = klass
+    end
+
+    # List of registered source type names (used by Schema and diagnostics).
+    def self.known_types
+      REGISTRY.keys.sort
+    end
+
     class Base
       def initialize(config)
         @config = config
@@ -145,7 +160,9 @@ module Blink
       def stringify_env(value)
         return {} unless value.is_a?(Hash)
 
-        value.transform_keys(&:to_s).transform_values(&:to_s)
+        value.transform_keys(&:to_s).transform_values do |entry|
+          Blink::EnvRefs.expand(entry.to_s, context: "service '#{@config["_service_name"] || "unknown"}' source env")
+        end
       end
 
       def raise_source_error(message, error_class = RuntimeError)
@@ -309,15 +326,16 @@ module Blink
       end
     end
 
-    # Build a source from a config hash (from the manifest).
+    # Build a source from a config hash (from the manifest). Looks up the
+    # source class in the registry populated by `Sources.register`.
     def self.build(config)
-      case config["type"]
-      when "github_release" then GithubRelease.new(config)
-      when "containerized_local_build" then ContainerizedLocalBuild.new(config)
-      when "local_build"    then LocalBuild.new(config)
-      when "url"            then Url.new(config)
-      else raise Manifest::Error, "Unknown source type '#{config["type"]}'. Supported: containerized_local_build, github_release, local_build, url"
+      type = config["type"]
+      klass = REGISTRY[type.to_s]
+      unless klass
+        supported = REGISTRY.keys.sort.join(", ")
+        raise Manifest::Error, "Unknown source type '#{type}'. Supported: #{supported}"
       end
+      klass.new(config)
     end
   end
 end

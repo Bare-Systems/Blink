@@ -116,5 +116,7 @@ module Blink
         fingerprint_paths([workdir], excluded: [File.expand_path(artifact_rel, workdir)])
       end
     end
+
+    register("local_build", LocalBuild)
   end
 end

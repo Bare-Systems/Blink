@@ -105,13 +105,7 @@ module Blink
       # Raises if a referenced variable is not set, so misconfigured deploys
       # fail loudly rather than writing literal "${VAR}" into the env file.
       def expand_env_refs(value)
-        value.gsub(/\$\{([^}]+)\}/) do
-          var = $1
-          ENV.fetch(var) do
-            raise Manifest::Error,
-              "blink.toml seed references ${#{var}} but it is not set in the environment or .env file"
-          end
-        end
+        Blink::EnvRefs.expand(value, context: "blink.toml seed")
       end
     end
 

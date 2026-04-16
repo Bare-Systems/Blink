@@ -71,10 +71,36 @@ module Blink
     #   path = "blink/tests/polar_check.sh"
     #
     class InlineRunner
+      # Registry of inline test type → handler method symbol. Plugins and
+      # built-in test types register here via `InlineRunner.register`. The
+      # handler method is invoked on an `InlineRunner` instance with
+      # `(name, spec)` and should either return normally (pass) or raise
+      # `AssertionError` (fail) / any other exception (error).
+      REGISTRY = {}
+
+      # Register an inline test type. `handler` is the symbol of an instance
+      # method on `InlineRunner` (or a subclass / reopening) that implements
+      # the type. Types registered as aliases should point at the same
+      # handler — e.g. "api" → :run_http.
+      def self.register(type, handler)
+        REGISTRY[type.to_s] = handler
+      end
+
+      # List of registered inline test types (used by Schema and diagnostics).
+      def self.known_types
+        REGISTRY.keys.sort
+      end
+
       def initialize(tests_cfg, ctx)
         @tests_cfg = tests_cfg  # Hash: { "test-name" => { "type" => "http", ... } }
         @ctx       = ctx
-        @http      = HTTP.new(ctx.target)
+      end
+
+      # Build an HTTP client for a single test spec. TLS verification is on by
+      # default; the spec must set `tls_insecure = true` to hit self-signed
+      # endpoints.
+      def http_for(spec)
+        HTTP.new(@ctx.target, tls_insecure: spec.fetch("tls_insecure", false))
       end
 
       # Run all inline tests, optionally filtered to tests whose tags overlap
@@ -112,15 +138,9 @@ module Blink
         rec   = TestRecord.new(name, tags, suite_name, spec["desc"], nil, nil, nil, nil)
 
         begin
-          case type
-          when "http"   then run_http(name, spec)
-          when "shell"  then run_shell(name, spec)
-          when "mcp"    then run_mcp(name, spec)
-          when "ui"     then run_ui(name, spec)
-          when "script" then run_script(name, spec)
-          else
-            raise Manifest::Error, "Unknown inline test type '#{type}' for '#{name}'"
-          end
+          handler = REGISTRY[type]
+          raise Manifest::Error, "Unknown inline test type '#{type}' for '#{name}'" unless handler
+          send(handler, name, spec)
 
           elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start
           rec.dup.tap { |r| r.status = :pass; r.elapsed = elapsed }
@@ -145,11 +165,12 @@ module Blink
         body    = spec["body"]
         body    = resolve(body) if body.is_a?(String)
 
+        http = http_for(spec)
         res = case method
-              when "GET"  then @http.get(url,  headers: headers, http_version: http_version)
-              when "POST" then @http.post(url, body: body, headers: headers, http_version: http_version)
-              when "HEAD" then @http.head(url, headers: headers, http_version: http_version)
-              else             @http.get(url,  headers: headers, http_version: http_version)
+              when "GET"  then http.get(url,  headers: headers, http_version: http_version)
+              when "POST" then http.post(url, body: body, headers: headers, http_version: http_version)
+              when "HEAD" then http.head(url, headers: headers, http_version: http_version)
+              else             http.get(url,  headers: headers, http_version: http_version)
               end
 
         apply_response_checks(name, res, normalized_checks(spec, default_status: nil))
@@ -184,7 +205,7 @@ module Blink
           }
         )
 
-        res             = @http.post("#{url}/mcp", body: body, headers: { "Content-Type" => "application/json" })
+        res             = http_for(spec).post("#{url}/mcp", body: body, headers: { "Content-Type" => "application/json" })
         expected_status = spec["expect_status"] || 200
 
         raise AssertionError,
@@ -203,7 +224,7 @@ module Blink
 
       def run_ui(name, spec)
         url = resolve(spec["url"] || raise(Manifest::Error, "ui test '#{name}' requires url"))
-        res = @http.get(url, headers: resolved_headers(spec))
+        res = http_for(spec).get(url, headers: resolved_headers(spec))
         apply_response_checks(name, res, normalized_checks(spec, default_status: 200), html: true)
       end
 
@@ -236,7 +257,9 @@ module Blink
       end
 
       def resolved_headers(spec)
-        (spec["headers"] || {}).transform_values { |v| resolve(v.to_s) }
+        (spec["headers"] || {}).transform_values do |value|
+          Blink::EnvRefs.expand(resolve(value.to_s), context: "inline test header")
+        end
       end
 
       def normalized_checks(spec, default_status:)
@@ -471,6 +494,14 @@ module Blink
         else str
         end
       end
+
+      # ── Built-in test type registrations ───────────────────────────────────
+      register("http",   :run_http)
+      register("api",    :run_http)  # alias, historical
+      register("shell",  :run_shell)
+      register("mcp",    :run_mcp)
+      register("ui",     :run_ui)
+      register("script", :run_script)
     end
   end
 end

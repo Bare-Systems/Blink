@@ -97,10 +97,11 @@ module Blink
         hc_cfg = svc&.dig("health_check")
         if hc_cfg&.dig("url")
           url = Operations.step_context(manifest: @manifest, service_name: name, target: target).resolve(hc_cfg["url"])
-          http_version = hc_cfg["http_version"]
-          code = target.capture(
-            "curl -sfk --max-time 5 #{curl_http_version_flag(http_version)} --output /dev/null --write-out '%{http_code}' #{url} 2>/dev/null || echo 000"
-          ).to_i
+          code = Blink::HTTP::Adapter.health_probe(
+            target, url,
+            http_version: hc_cfg["http_version"],
+            tls_insecure: hc_cfg.fetch("tls_insecure", false)
+          )
           healthy = (200..299).cover?(code)
           { name: name, healthy: healthy, reachable: true, detail: "HTTP #{code}  #{url}", url: url, code: code, target: target.description, target_name: target.name }
         else
@@ -108,14 +109,6 @@ module Blink
         end
       rescue => e
         { name: name, healthy: false, reachable: false, detail: e.message, target: target&.description, target_name: target&.name }
-      end
-
-      def curl_http_version_flag(http_version)
-        case http_version.to_s
-        when "1.1" then "--http1.1"
-        when "2" then "--http2"
-        else ""
-        end
       end
     end
 
@@ -138,7 +131,7 @@ module Blink
           if target.is_a?(Targets::SSHTarget)
             docker_ok = begin
               target.capture("docker info > /dev/null 2>&1 && echo ok || echo fail") == "ok"
-            rescue SSHError
+            rescue TargetError
               false
             end
             checks << { target: target.name, check: "docker daemon", status: docker_ok ? "pass" : "fail" }
@@ -155,10 +148,13 @@ module Blink
             next unless url
 
             url = Operations.step_context(manifest: @manifest, service_name: name, target: service_target).resolve(url)
+            hc_cfg = svc["health_check"] || {}
             ok = begin
-              code = service_target.capture(
-                "curl -sfk --max-time 5 --output /dev/null --write-out '%{http_code}' #{url} 2>/dev/null || echo 000"
-              ).to_i
+              code = Blink::HTTP::Adapter.health_probe(
+                service_target, url,
+                http_version: hc_cfg["http_version"],
+                tls_insecure: hc_cfg.fetch("tls_insecure", false)
+              )
               (200..299).cover?(code)
             rescue
               false
@@ -197,7 +193,7 @@ module Blink
           detail = pct < 90 ? "#{100 - pct}% free - getting low" : "#{100 - pct}% free - critically low!"
           checks << { target: target.name, check: "disk (/)", status: "warn", detail: detail }
         end
-      rescue SSHError => e
+      rescue TargetError => e
         checks << { target: target.name, check: "disk (/)", status: "fail", detail: e.message }
       end
 
@@ -213,7 +209,7 @@ module Blink
         else
           checks << { target: target.name, check: "memory", status: "warn", detail: "#{detail} - high" }
         end
-      rescue SSHError => e
+      rescue TargetError => e
         checks << { target: target.name, check: "memory", status: "fail", detail: e.message }
       end
     end
@@ -640,8 +636,11 @@ module Blink
 
       def run(persist: true)
         started_at = Time.now
+        service_results = {}
         records = testable_services.flat_map do |entry|
-          run_service(entry)
+          service_records = run_service(entry)
+          service_results[entry[:name]] = Testing::RunResult.new(service_records).to_h
+          service_records
         end
         result = Testing::RunResult.new(records)
         completed_at = Time.now
@@ -661,6 +660,7 @@ module Blink
         {
           service: @service_name,
           target: @service_name ? testable_services.first[:target].description : nil,
+          service_results: service_results,
           result: result,
           started_at: started_at,
           completed_at: completed_at

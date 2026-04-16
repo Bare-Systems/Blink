@@ -188,6 +188,7 @@ module Blink
       blockers << "stop requires stop.command." if pipeline.include?("stop") && !svc.dig("stop", "command")
       blockers << "start requires start.command." if pipeline.include?("start") && !svc.dig("start", "command")
       blockers << "health_check requires health_check.url." if pipeline.include?("health_check") && !svc.dig("health_check", "url")
+      warnings << "health_check.tls_insecure = true — TLS verification disabled for #{svc.dig("health_check", "url")}." if pipeline.include?("health_check") && svc.dig("health_check", "tls_insecure") == true
       blockers << "verify requires verify.suite or verify.tests." if pipeline.include?("verify") && !svc.dig("verify", "suite") && !svc.dig("verify", "tests")
 
       source_cfg = svc["source"] || {}

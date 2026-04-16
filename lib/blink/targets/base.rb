@@ -51,7 +51,9 @@ module Blink
         value = config["env"]
         return {} unless value.is_a?(Hash)
 
-        value.transform_keys(&:to_s).transform_values(&:to_s)
+        value.transform_keys(&:to_s).transform_values do |entry|
+          Blink::EnvRefs.expand(entry.to_s, context: "target '#{name}' env")
+        end
       end
 
       # Base directory on the target where services are installed.

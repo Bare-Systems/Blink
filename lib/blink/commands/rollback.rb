@@ -1,13 +1,10 @@
 # frozen_string_literal: true
 
 require "json"
-require "stringio"
 
 module Blink
   module Commands
-    class Rollback
-      ANSI_STRIP = /\e\[[0-9;]*[mGKHF]/.freeze
-
+    class Rollback < Base
       def initialize(argv)
         @argv = argv.dup
         @service = @argv.shift
@@ -53,26 +50,10 @@ module Blink
         result.success? ? Output.success(result.summary) : Output.error(result.summary)
         exit 1 if result.failure?
       rescue Manifest::Error => e
-        if @json
-          puts Response.dump(
-            success: false,
-            summary: e.message,
-            details: { service: @service, error: e.message },
-            next_steps: ["Define a rollback pipeline in blink.toml and retry `blink rollback`."]
-          )
-          exit 1
-        end
+        emit_exception_and_exit(e, service: @service, next_steps: ["Define a rollback pipeline in blink.toml and retry `blink rollback`."]) if @json
         Output.fatal(e.message)
-      rescue SSHError => e
-        if @json
-          puts Response.dump(
-            success: false,
-            summary: "SSH error: #{e.message}",
-            details: { service: @service, error: e.message },
-            next_steps: ["Run `blink doctor` to confirm connectivity, then retry."]
-          )
-          exit 1
-        end
+      rescue TargetError => e
+        emit_exception_and_exit(e, service: @service, prefix: "SSH error", next_steps: ["Run `blink doctor` to confirm connectivity, then retry."]) if @json
         Output.fatal("SSH error: #{e.message}")
       end
 
@@ -81,21 +62,6 @@ module Blink
       def show_help
         puts "#{Output::BOLD}Usage:#{Output::RESET}  blink rollback <service> [--target NAME] [--dry-run] [--json]\n\n"
         puts "Run the service's declared rollback pipeline."
-      end
-
-      def capture_output
-        old_stdout = $stdout
-        old_stderr = $stderr
-        captured_out = StringIO.new
-        captured_err = StringIO.new
-        $stdout = captured_out
-        $stderr = captured_err
-        result = yield
-        output = [captured_out.string, captured_err.string].reject(&:empty?).join.gsub(ANSI_STRIP, "")
-        [output, result]
-      ensure
-        $stdout = old_stdout
-        $stderr = old_stderr
       end
 
       def next_steps_for(result)

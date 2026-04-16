@@ -16,6 +16,8 @@ class BlinkTestCase < Minitest::Test
   BIN = File.join(ROOT, "bin", "blink")
   VALID_FIXTURE_DIR = File.join(ROOT, "test", "fixtures", "manifests", "valid", "basic")
   VALID_FIXTURE_MANIFEST = File.join(VALID_FIXTURE_DIR, "blink.toml")
+  PLATFORM_FIXTURE_DIR = File.join(ROOT, "test", "fixtures", "manifests", "valid", "platform_stack")
+  PLATFORM_FIXTURE_MANIFEST = File.join(PLATFORM_FIXTURE_DIR, "blink.toml")
   INVALID_FIXTURE_MANIFEST = File.join(ROOT, "test", "fixtures", "manifests", "invalid", "missing_target.toml")
 
   def with_fixture_workspace
@@ -25,6 +27,22 @@ class BlinkTestCase < Minitest::Test
       yield workspace
     ensure
       FileUtils.rm_rf(File.join(tmp, "basic", ".blink"))
+    end
+  end
+
+  def with_platform_workspace(port: nil)
+    Dir.mktmpdir("blink-platform") do |tmp|
+      FileUtils.cp_r(PLATFORM_FIXTURE_DIR, tmp)
+      workspace = File.join(tmp, "platform_stack")
+
+      if port
+        manifest_path = File.join(workspace, "blink.toml")
+        File.write(manifest_path, File.read(manifest_path).gsub("__PORT__", port.to_s))
+      end
+
+      yield workspace
+    ensure
+      FileUtils.rm_rf(File.join(tmp, "platform_stack", ".blink"))
     end
   end
 

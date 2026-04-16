@@ -90,7 +90,7 @@ module Blink
         end
       rescue Manifest::Error => e
         Output.fatal(e.message)
-      rescue SSHError => e
+      rescue TargetError => e
         Output.fatal("SSH error: #{e.message}")
       end
     end

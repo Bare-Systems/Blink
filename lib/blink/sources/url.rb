@@ -245,7 +245,9 @@ module Blink
         value = @config["headers"]
         return {} unless value.is_a?(Hash)
 
-        value.transform_keys(&:to_s).transform_values(&:to_s)
+        value.transform_keys(&:to_s).transform_values do |entry|
+          Blink::EnvRefs.expand(entry.to_s, context: "service '#{@config["_service_name"] || "unknown"}' source header")
+        end
       end
 
       def authorization_header?(req)
@@ -289,5 +291,7 @@ module Blink
         @config["token_env"]&.then { |env| ENV[env] }
       end
     end
+
+    register("url", Url)
   end
 end
