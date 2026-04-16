@@ -101,11 +101,12 @@ Derived from `deep-research-report.md` (2026-04). Each sprint is independently s
 
 ### Sprint F — Semantic nucleus + sources + plugins + MCP tasks
 **Tasks:**
-- [ ] Define structs: `OperationPlan`, `OperationResult`, `StepResult(changed, idempotent)`, `ArtifactRef`, `Diagnostics`.
-- [ ] Refactor CLI + MCP to render from these structs (single source of truth).
-- [ ] Split `Sources::Base` into `Sources::Cache`, `Sources::Verification`, `Sources::Downloader` (shared by `url` + `github_release`).
-- [ ] Plugin autoload from `blink/plugins/*.rb`; plugins register via `Blink::Steps.register(StepDefinition)`.
-- [ ] MCP long-ops: `blink_build` / `blink_deploy` accept `task: true` → return task handle; emit progress notifications; add task retrieval/cancel.
+- [x] Define structs: `OperationPlan`, `OperationResult`, `StepResult(changed, idempotent)`, `ArtifactRef`, `Diagnostics`. _(F.1 — shipped; `lib/blink/semantic.rb`.)_
+- [ ] Refactor CLI + MCP to render from these structs (single source of truth). _(Incremental — new callsites emit them directly; legacy hashes coexist until each callsite migrates. Tracked separately as renderer migration work.)_
+- [x] Split `Sources::Base` into `Sources::Cache`, `Sources::Verification` mixins. _(F.2 — shipped.)_
+- [ ] Extract `Sources::Downloader` shared by `url` + `github_release`. _(Deferred to F.2b — requires aligning `url.rb` and `github_release.rb` HTTP logic first.)_
+- [x] Plugin autoload from `blink/plugins/*.rb` + `$BLINK_PLUGIN_PATH`. _(F.3 — shipped; plugins register via existing registries and flow through Sprint E's registry-driven schema.)_
+- [ ] MCP long-ops: `blink_build` / `blink_deploy` accept `task: true` → return task handle; emit progress notifications; add task retrieval/cancel. _(F.4 — deferred; substantial subsystem (task manager, progress, cancel) that deserves its own focused sprint.)_
 
 ---
 

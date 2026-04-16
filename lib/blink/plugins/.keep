@@ -1,0 +1,7 @@
+# Plugin drop-in directory. See lib/blink.rb → Blink::Plugins.autoload!
+# Place a .rb file here (or on $BLINK_PLUGIN_PATH) that registers new sources,
+# steps, or inline test types via the public registries:
+#
+#   Blink::Sources.register("my_source", MySource)
+#   Blink::Steps.register("my_step", MyStep)
+#   Blink::Testing::InlineRunner.register("my_test", :run_my_test)
