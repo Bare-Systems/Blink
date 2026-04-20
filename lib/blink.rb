@@ -80,6 +80,9 @@ require_relative "blink/commands/history"
 require_relative "blink/commands/ssh_cmd"
 require_relative "blink/commands/forward"
 
+# ── Task manager (used by MCP server for async operations) ───────────────────
+require_relative "blink/task_manager"
+
 # ── MCP server (loaded lazily via --mcp flag in CLI) ──────────────────────────
 # require_relative "blink/mcp_server"   # loaded on demand in cli.rb
 

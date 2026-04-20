@@ -52,7 +52,12 @@ class BlinkTestCase < Minitest::Test
   end
 
   def parse_json_output(result)
-    JSON.parse(result.fetch(:stdout))
+    # Subprocess stdout comes back as ASCII-8BIT when the test runs without a
+    # UTF-8 LANG (e.g. plain `rake test` on macOS, or in CI). The JSON gem
+    # internally re-encodes to UTF-8 and chokes on multibyte sequences in the
+    # CLI's human banners (✓, ✗, →, etc) emitted before the JSON envelope.
+    # Force the bytes to UTF-8 first — the body is already valid UTF-8.
+    JSON.parse(result.fetch(:stdout).dup.force_encoding("UTF-8"))
   end
 
   def write_signature_verifier(dir)

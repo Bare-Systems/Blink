@@ -2,6 +2,7 @@
 
 require "json"
 require "stringio"
+require_relative "task_manager"
 
 module Blink
   # MCP server — stdio transport (JSON-RPC 2.0).
@@ -50,7 +51,9 @@ module Blink
       "blink_build"         => { readOnlyHint: false, idempotentHint: true, destructiveHint: false, openWorldHint: true },
       "blink_deploy"        => { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: true },
       "blink_rollback"      => { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: true },
-      "blink_restart"       => { readOnlyHint: false, idempotentHint: true, destructiveHint: false, openWorldHint: true }
+      "blink_restart"       => { readOnlyHint: false, idempotentHint: true, destructiveHint: false, openWorldHint: true },
+      "blink_task_status"   => { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+      "blink_task_cancel"   => { readOnlyHint: false, idempotentHint: true, destructiveHint: false, openWorldHint: false }
     }.freeze
 
     BASE_TOOLS = [
@@ -87,6 +90,8 @@ module Blink
             service: { type: "string",  description: "Service name from blink.toml" },
             build:   { type: "string",  description: "Named build strategy to use (e.g. 'local_docker', 'github')" },
             dry_run: { type: "boolean", description: "Preview without executing (default: false)" },
+            task:    { type: "boolean", description: "Run asynchronously and return a task handle instead of blocking (default: false). " \
+                                                      "Poll blink_task_status with the returned task_id to check progress." },
           },
           required: ["service"]
         }
@@ -105,6 +110,8 @@ module Blink
             dry_run:     { type: "boolean", description: "Preview pipeline without executing (default: false)" },
             skip_build:  { type: "boolean", description: "Skip the fetch_artifact/build step and use the most recently cached artifact (default: false). " \
                                                           "Use this when the image is already in the registry from a prior blink_build call." },
+            task:        { type: "boolean", description: "Run asynchronously and return a task handle instead of blocking (default: false). " \
+                                                          "Poll blink_task_status with the returned task_id to check progress." },
           },
           required: ["service"]
         }
@@ -233,6 +240,32 @@ module Blink
           required: []
         }
       },
+      {
+        name: "blink_task_status",
+        description: "Check the status and progress of a background task started with task=true. " \
+                     "Returns the task state, progress log, and result (if finished). " \
+                     "Omit task_id to list all tasks.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            task_id: { type: "string", description: "Task ID returned by blink_build or blink_deploy (omit to list all)" },
+            status:  { type: "string", description: "Filter by status (pending, running, completed, failed, cancelled)" },
+          },
+          required: []
+        }
+      },
+      {
+        name: "blink_task_cancel",
+        description: "Request cancellation of a running background task. The task will stop after its " \
+                     "current pipeline step completes. Already-finished tasks cannot be cancelled.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            task_id: { type: "string", description: "Task ID to cancel" },
+          },
+          required: ["task_id"]
+        }
+      },
     ].freeze
 
     # Decorate each base tool definition with the shared outputSchema and its
@@ -244,6 +277,10 @@ module Blink
         annotations: annotations
       ).freeze
     end.freeze
+
+    def initialize
+      @task_manager = TaskManager.new
+    end
 
     def run
       $stdout.sync = true
@@ -388,6 +425,8 @@ module Blink
       when "blink_history"       then tool_history(args)
       when "blink_rollback"      then tool_rollback(args)
       when "blink_doctor"        then tool_doctor(args)
+      when "blink_task_status"   then tool_task_status(args)
+      when "blink_task_cancel"   then tool_task_cancel(args)
       else raise "Unknown tool '#{name}'. Available: #{TOOLS.map { _1[:name] }.join(", ")}"
       end
     end
@@ -425,37 +464,15 @@ module Blink
       service    = require_arg!(args, "service")
       dry_run    = args.fetch("dry_run", false)
       build_name = args["build"]
+      async      = args.fetch("task", false)
 
-      manifest = manifest_for_service(service)
-      runner   = Runner.new(manifest)
-
-      output, result = capture_output do
-        runner.run(
-          service,
-          operation:  "build",
-          dry_run:    dry_run,
-          json_mode:  false,
-          build_name: build_name
-        )
+      if async && !dry_run
+        return submit_task("blink_build", service) do |task|
+          run_build_sync(service, dry_run: false, build_name: build_name, task: task)
+        end
       end
 
-      artifact = result.step_results
-                       .find { |s| s[:step] == "fetch_artifact" }
-                       &.dig(:output, "artifact_path")
-
-      next_step = if result.success?
-        dry_run ? "Run blink_build without dry_run=true to execute the build." \
-                : "Run blink_deploy with service='#{service}'#{build_name ? ", build='#{build_name}'" : ""} to deploy this artifact."
-      else
-        "Check the failed step '#{result.failed_at}'. Inspect the build command and retry with blink_build."
-      end
-
-      JSON.generate({
-        success:             result.success?,
-        summary:             result.summary,
-        suggested_next_step: next_step,
-        data:                result.to_h.merge(output: output, artifact_path: artifact, manifest: manifest.path)
-      })
+      run_build_sync(service, dry_run: dry_run, build_name: build_name)
     end
 
     def tool_deploy(args)
@@ -464,35 +481,18 @@ module Blink
       version     = args.fetch("version", "latest")
       build_name  = args["build"]
       skip_build  = args.fetch("skip_build", false)
+      async       = args.fetch("task", false)
+      target_name = args["target"]
 
-      manifest = manifest_for_service(service)
-      runner   = Runner.new(manifest)
-
-      output, result = capture_output do
-        runner.run(
-          service,
-          target_name: args["target"],
-          dry_run:     dry_run,
-          json_mode:   false,
-          version:     version,
-          build_name:  build_name,
-          skip_build:  skip_build
-        )
+      if async && !dry_run
+        return submit_task("blink_deploy", service) do |task|
+          run_deploy_sync(service, dry_run: false, version: version, build_name: build_name,
+                          skip_build: skip_build, target_name: target_name, task: task)
+        end
       end
 
-      next_step = if result.success?
-        dry_run ? "Run blink_deploy without dry_run=true to execute the deployment." \
-                : "Run blink_test with service='#{service}' to verify the deployment."
-      else
-        "Check the failed step '#{result.failed_at}'. You can retry with blink_deploy or inspect logs with blink_logs."
-      end
-
-      JSON.generate({
-        success:             result.success?,
-        summary:             result.summary,
-        suggested_next_step: next_step,
-        data:                result.to_h.merge(output: output, manifest: manifest.path)
-      })
+      run_deploy_sync(service, dry_run: dry_run, version: version, build_name: build_name,
+                      skip_build: skip_build, target_name: target_name)
     end
 
     def tool_test(args)
@@ -792,6 +792,160 @@ module Blink
 
     def error_response(id, code, message)
       { jsonrpc: "2.0", id: id, error: { code: code, message: message } }
+    end
+
+    # ── Task tools ──────────────────────────────────────────────────────────
+
+    def tool_task_status(args)
+      task_id = args["task_id"]
+
+      if task_id
+        task = @task_manager.find(task_id)
+        return JSON.generate({
+          success: false, summary: "Task '#{task_id}' not found.",
+          suggested_next_step: "Call blink_task_status without task_id to list all tasks.",
+          data: {}
+        }) unless task
+
+        next_step = case task.status
+                    when :running   then "Task is still running. Poll blink_task_status again in a few seconds."
+                    when :completed then "Task finished. Inspect data.result for the full outcome."
+                    when :failed    then "Task failed. Check data.result for the error details."
+                    when :cancelled then "Task was cancelled."
+                    else "Task is pending."
+                    end
+
+        JSON.generate({
+          success:             !task.failed?,
+          summary:             "Task #{task_id}: #{task.status} (#{task.tool} #{task.service})",
+          suggested_next_step: next_step,
+          data:                task.to_h
+        })
+      else
+        tasks = @task_manager.list(status: args["status"])
+        JSON.generate({
+          success:             true,
+          summary:             "#{tasks.size} task(s)",
+          suggested_next_step: tasks.empty? ? "No tasks. Start one with blink_build or blink_deploy using task=true." :
+                                              "Use blink_task_status with task_id to inspect a specific task.",
+          data:                { tasks: tasks }
+        })
+      end
+    end
+
+    def tool_task_cancel(args)
+      task_id = require_arg!(args, "task_id")
+      cancelled = @task_manager.cancel(task_id)
+
+      if cancelled
+        JSON.generate({
+          success:             true,
+          summary:             "Cancellation requested for task #{task_id}. It will stop after the current step.",
+          suggested_next_step: "Poll blink_task_status to confirm the task has reached 'cancelled' status.",
+          data:                { task_id: task_id }
+        })
+      else
+        task = @task_manager.find(task_id)
+        reason = task ? "task is already #{task.status}" : "task not found"
+        JSON.generate({
+          success:             false,
+          summary:             "Cannot cancel task #{task_id}: #{reason}.",
+          suggested_next_step: task ? "No action needed — task is already finished." :
+                                      "Call blink_task_status to list available tasks.",
+          data:                { task_id: task_id }
+        })
+      end
+    end
+
+    # ── Async task helpers ───────────────────────────────────────────────
+
+    def submit_task(tool_name, service, &block)
+      task = @task_manager.submit(tool: tool_name, service: service)
+      @task_manager.run_task(task, &block)
+      log("task submitted: #{task.id} (#{tool_name} #{service})")
+
+      JSON.generate({
+        success:             true,
+        summary:             "Task #{task.id} submitted (#{tool_name} #{service}). Poll blink_task_status to track progress.",
+        suggested_next_step: "Call blink_task_status with task_id='#{task.id}' to check progress.",
+        data:                { task_id: task.id, tool: tool_name, service: service, status: "pending" }
+      })
+    end
+
+    # ── Synchronous build/deploy runners (shared by sync + async paths) ──
+
+    def run_build_sync(service, dry_run:, build_name: nil, task: nil)
+      manifest = manifest_for_service(service)
+      runner   = Runner.new(manifest)
+      task&.log("Starting build for #{service}")
+
+      output, result = capture_output do
+        runner.run(
+          service,
+          operation:  "build",
+          dry_run:    dry_run,
+          json_mode:  false,
+          build_name: build_name
+        )
+      end
+
+      task&.log("Build #{result.success? ? "succeeded" : "failed"}: #{result.summary}")
+
+      artifact = result.step_results
+                       .find { |s| s[:step] == "fetch_artifact" }
+                       &.dig(:output, "artifact_path")
+
+      next_step = if result.success?
+        dry_run ? "Run blink_build without dry_run=true to execute the build." \
+                : "Run blink_deploy with service='#{service}'#{build_name ? ", build='#{build_name}'" : ""} to deploy this artifact."
+      else
+        "Check the failed step '#{result.failed_at}'. Inspect the build command and retry with blink_build."
+      end
+
+      # When called from a task, return a hash (stored as task.result).
+      # When called synchronously, return the JSON string.
+      payload = {
+        success:             result.success?,
+        summary:             result.summary,
+        suggested_next_step: next_step,
+        data:                result.to_h.merge(output: output, artifact_path: artifact, manifest: manifest.path)
+      }
+      task ? payload : JSON.generate(payload)
+    end
+
+    def run_deploy_sync(service, dry_run:, version: "latest", build_name: nil, skip_build: false, target_name: nil, task: nil)
+      manifest = manifest_for_service(service)
+      runner   = Runner.new(manifest)
+      task&.log("Starting deploy for #{service}")
+
+      output, result = capture_output do
+        runner.run(
+          service,
+          target_name: target_name,
+          dry_run:     dry_run,
+          json_mode:   false,
+          version:     version,
+          build_name:  build_name,
+          skip_build:  skip_build
+        )
+      end
+
+      task&.log("Deploy #{result.success? ? "succeeded" : "failed"}: #{result.summary}")
+
+      next_step = if result.success?
+        dry_run ? "Run blink_deploy without dry_run=true to execute the deployment." \
+                : "Run blink_test with service='#{service}' to verify the deployment."
+      else
+        "Check the failed step '#{result.failed_at}'. You can retry with blink_deploy or inspect logs with blink_logs."
+      end
+
+      payload = {
+        success:             result.success?,
+        summary:             result.summary,
+        suggested_next_step: next_step,
+        data:                result.to_h.merge(output: output, manifest: manifest.path)
+      }
+      task ? payload : JSON.generate(payload)
     end
 
     def log(msg)

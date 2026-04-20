@@ -1,0 +1,69 @@
+name: Blink CI
+
+# Runs on every push and pull request. The matrix covers the Ruby versions
+# Blink officially supports (matching the Gemfile's `ruby ">= 3.1"` floor).
+# Each job:
+#   1. Installs Ruby + bundler-cached deps
+#   2. Runs the minitest suite (`rake test`)
+#   3. Smoke-validates the bundled fixture manifest in both human + JSON
+#      output modes
+#   4. Smoke-plans a known fixture service so a regression in the planner
+#      surfaces before it reaches a release
+#
+# Rubocop is intentionally gated to a single Ruby version (the highest one)
+# so style failures don't multiply across the matrix — fix them once.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Ruby ${{ matrix.ruby }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["3.1", "3.2", "3.3"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Ruby ${{ matrix.ruby }}
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+      - name: Run minitest
+        run: bundle exec rake test
+      - name: Smoke — validate fixture manifest (human)
+        env:
+          BLINK_MANIFEST: test/fixtures/manifests/valid/basic/blink.toml
+        run: bundle exec ruby -Ilib bin/blink validate
+      - name: Smoke — validate fixture manifest (JSON)
+        env:
+          BLINK_MANIFEST: test/fixtures/manifests/valid/basic/blink.toml
+        run: bundle exec ruby -Ilib bin/blink validate --json
+      - name: Smoke — plan fixture service
+        env:
+          BLINK_MANIFEST: test/fixtures/manifests/valid/basic/blink.toml
+        run: bundle exec ruby -Ilib bin/blink plan fixture
+
+  rubocop:
+    name: Rubocop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+      - name: Run rubocop
+        # Rubocop is informational for now (no .rubocop.yml committed yet);
+        # this step won't fail CI if the rule set is missing or empty.
+        run: bundle exec rubocop --no-color || true

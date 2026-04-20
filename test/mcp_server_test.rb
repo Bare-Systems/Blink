@@ -54,6 +54,44 @@ class MCPServerTest < BlinkTestCase
     assert_equal Blink::MCPServer::PROTOCOL_VERSION, resp[:result][:protocolVersion]
   end
 
+  # ── Sprint F.4 task tools ─────────────────────────────────────────────
+
+  def test_tools_list_includes_task_tools
+    resp = dispatch("tools/list")
+    names = resp[:result][:tools].map { |t| t[:name] }
+    assert_includes names, "blink_task_status"
+    assert_includes names, "blink_task_cancel"
+  end
+
+  def test_task_status_with_no_tasks
+    resp = dispatch("tools/call", { "name" => "blink_task_status", "arguments" => {} })
+    result = resp[:result][:structuredContent]
+    assert_equal true, result["success"]
+    assert_equal [], result.dig("data", "tasks")
+  end
+
+  def test_task_status_unknown_id
+    resp = dispatch("tools/call", { "name" => "blink_task_status", "arguments" => { "task_id" => "nonexistent" } })
+    result = resp[:result][:structuredContent]
+    assert_equal false, result["success"]
+    assert_match(/not found/, result["summary"])
+  end
+
+  def test_task_cancel_unknown_id
+    resp = dispatch("tools/call", { "name" => "blink_task_cancel", "arguments" => { "task_id" => "nonexistent" } })
+    result = resp[:result][:structuredContent]
+    assert_equal false, result["success"]
+    assert_match(/not found/, result["summary"])
+  end
+
+  def test_build_tool_schema_includes_task_param
+    resp = dispatch("tools/list")
+    build = resp[:result][:tools].find { |t| t[:name] == "blink_build" }
+    assert build[:inputSchema][:properties].key?(:task), "blink_build missing task parameter"
+    deploy = resp[:result][:tools].find { |t| t[:name] == "blink_deploy" }
+    assert deploy[:inputSchema][:properties].key?(:task), "blink_deploy missing task parameter"
+  end
+
   def test_redact_args_scrubs_secret_shaped_keys
     out = @server.send(:redact_args, { "service" => "app", "api_key" => "sk-xyz", "token" => "t", "Authorization" => "Bearer x" })
     assert_equal "app", out["service"]

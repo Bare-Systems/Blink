@@ -1,6 +1,6 @@
 # Blink Refactor Plan
 
-Derived from `deep-research-report.md` (2026-04). Each sprint is independently shippable and preserves `blink.toml` v1 compatibility.
+Aligned with the workspace `ROADMAP.md` and Blink repo state as of 2026-04. Each sprint is independently shippable and preserves `blink.toml` v1 compatibility.
 
 ---
 
@@ -106,16 +106,18 @@ Derived from `deep-research-report.md` (2026-04). Each sprint is independently s
 - [x] Split `Sources::Base` into `Sources::Cache`, `Sources::Verification` mixins. _(F.2 — shipped.)_
 - [ ] Extract `Sources::Downloader` shared by `url` + `github_release`. _(Deferred to F.2b — requires aligning `url.rb` and `github_release.rb` HTTP logic first.)_
 - [x] Plugin autoload from `blink/plugins/*.rb` + `$BLINK_PLUGIN_PATH`. _(F.3 — shipped; plugins register via existing registries and flow through Sprint E's registry-driven schema.)_
-- [ ] MCP long-ops: `blink_build` / `blink_deploy` accept `task: true` → return task handle; emit progress notifications; add task retrieval/cancel. _(F.4 — deferred; substantial subsystem (task manager, progress, cancel) that deserves its own focused sprint.)_
+- [x] MCP long-ops: `blink_build` / `blink_deploy` accept `task: true` → return task handle; `blink_task_status` / `blink_task_cancel` for query + cancel. _(F.4 — shipped; `lib/blink/task_manager.rb`, MCP wiring in mcp_server.rb, tests in task_manager_test.rb + mcp_server_test.rb.)_
 
 ---
 
 ## Priority 3 — Polish
 
-### Sprint G — Test stack + CI
+### Sprint G — Test stack + CI _(complete)_
 **Tasks:**
-- [ ] Drop unused `rspec` from Gemfile (or migrate — pick one; default is drop).
-- [ ] Add `.github/workflows/blink-ci.yml`: matrix Ruby 3.1/3.2/3.3, `rake test`, rubocop, `bin/blink validate --json` + `plan` smoke against fixture manifest.
+- [x] Drop unused `rspec` from Gemfile.
+- [x] Move `minitest` / `rake` to a dedicated `:test` group; add `nokogiri` there for the UI selector path.
+- [x] Fix the pre-existing UTF-8 `parse_json_output` bug in `test_helper.rb` (force_encoding before JSON.parse).
+- [x] Add `.github/workflows/blink-ci.yml`: matrix Ruby 3.1/3.2/3.3, `bundle exec rake test`, fixture manifest validate (human + JSON), fixture plan smoke. Rubocop on Ruby 3.3 only, informational.
 
 ---
 
