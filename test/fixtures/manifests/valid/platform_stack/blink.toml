@@ -8,7 +8,7 @@ base = "/tmp/blink-platform-stack"
 [targets.local.env]
 BEARCLAW_TOKEN = "${BLINK_BEARCLAW_TOKEN}"
 
-[services.tardigrade]
+[services.fixture-tardigrade]
 description = "Tardigrade edge gateway fixture"
 health_base = "http://127.0.0.1:__PORT__"
 
@@ -25,7 +25,7 @@ pipeline = ["fetch_artifact", "verify"]
 rollback_pipeline = ["stop", "start"]
 
 [services.tardigrade.health_check]
-url = "{{health_base}}/tardigrade/health"
+url = "{{health_base}}/fixture-tardigrade/health"
 
 [services.tardigrade.verify.tests.binary]
 type = "shell"
@@ -39,7 +39,7 @@ command = "true"
 [services.tardigrade.start]
 command = "true"
 
-[services.bearclaw]
+[services.fixture-bearclaw]
 description = "BearClaw gateway fixture"
 health_base = "http://127.0.0.1:__PORT__"
 
@@ -56,7 +56,7 @@ pipeline = ["fetch_artifact", "verify"]
 rollback_pipeline = ["stop", "start"]
 
 [services.bearclaw.health_check]
-url = "{{health_base}}/bearclaw/health"
+url = "{{health_base}}/fixture-bearclaw/health"
 
 [services.bearclaw.verify.tests.binary]
 type = "shell"

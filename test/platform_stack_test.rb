@@ -50,23 +50,23 @@ class PlatformStackTest < BlinkTestCase
     ENV["BLINK_BEARCLAW_TOKEN"] = "fixture-token"
 
     with_platform_workspace do |workspace|
-      tardigrade_first = run_cli("deploy", "tardigrade", "--json", chdir: workspace)
-      tardigrade_second = run_cli("deploy", "tardigrade", "--json", chdir: workspace)
-      bearclaw_first = run_cli("deploy", "bearclaw", "--json", chdir: workspace)
-      bearclaw_second = run_cli("deploy", "bearclaw", "--json", chdir: workspace)
+      fixture-tardigrade_first = run_cli("deploy", "fixture-tardigrade", "--json", chdir: workspace)
+      fixture-tardigrade_second = run_cli("deploy", "fixture-tardigrade", "--json", chdir: workspace)
+      bearclaw_first = run_cli("deploy", "fixture-bearclaw", "--json", chdir: workspace)
+      bearclaw_second = run_cli("deploy", "fixture-bearclaw", "--json", chdir: workspace)
 
-      [tardigrade_first, tardigrade_second, bearclaw_first, bearclaw_second].each do |result|
+      [fixture-tardigrade_first, fixture-tardigrade_second, bearclaw_first, bearclaw_second].each do |result|
         assert result[:status].success?, result[:stderr]
       end
 
-      assert_equal true, parse_json_output(tardigrade_first)["success"]
-      assert_equal true, parse_json_output(tardigrade_second)["success"]
+      assert_equal true, parse_json_output(fixture-tardigrade_first)["success"]
+      assert_equal true, parse_json_output(fixture-tardigrade_second)["success"]
       assert_equal true, parse_json_output(bearclaw_first)["success"]
       assert_equal true, parse_json_output(bearclaw_second)["success"]
 
       state = JSON.parse(File.read(File.join(workspace, ".blink", "state", "current.json")))
-      assert_equal true, state.dig("services", "tardigrade", "last_deploy", "artifact", "cached")
-      assert_equal true, state.dig("services", "bearclaw", "last_deploy", "artifact", "cached")
+      assert_equal true, state.dig("services", "fixture-tardigrade", "last_deploy", "artifact", "cached")
+      assert_equal true, state.dig("services", "fixture-bearclaw", "last_deploy", "artifact", "cached")
     end
   ensure
     ENV.delete("BLINK_BEARCLAW_TOKEN")
@@ -76,8 +76,8 @@ class PlatformStackTest < BlinkTestCase
     ENV["BLINK_BEARCLAW_TOKEN"] = "fixture-token"
 
     with_http_server(
-      "/tardigrade/health" => ->(_req) { [200, { "Content-Type" => "text/plain" }, "ok"] },
-      "/bearclaw/health" => ->(_req) { [200, { "Content-Type" => "text/plain" }, "ok"] }
+      "/fixture-tardigrade/health" => ->(_req) { [200, { "Content-Type" => "text/plain" }, "ok"] },
+      "/fixture-bearclaw/health" => ->(_req) { [200, { "Content-Type" => "text/plain" }, "ok"] }
     ) do |port|
       with_platform_workspace(port: port) do |workspace|
         Dir.chdir(workspace) do
@@ -92,21 +92,21 @@ class PlatformStackTest < BlinkTestCase
 
           status = dispatch(server, "tools/call", { "name" => "blink_status", "arguments" => {} }).dig(:result, :structuredContent)
           assert_equal true, status["success"]
-          assert_equal %w[bearclaw tardigrade], status.dig("data", "services").map { |service| service["name"] }.sort
+          assert_equal %w[bearclaw fixture-tardigrade], status.dig("data", "services").map { |service| service["name"] }.sort
 
-          deploy = dispatch(server, "tools/call", { "name" => "blink_deploy", "arguments" => { "service" => "tardigrade" } }).dig(:result, :structuredContent)
+          deploy = dispatch(server, "tools/call", { "name" => "blink_deploy", "arguments" => { "service" => "fixture-tardigrade" } }).dig(:result, :structuredContent)
           assert_equal true, deploy["success"]
-          assert_equal "tardigrade", deploy.dig("data", "service")
+          assert_equal "fixture-tardigrade", deploy.dig("data", "service")
 
-          second_deploy = dispatch(server, "tools/call", { "name" => "blink_deploy", "arguments" => { "service" => "bearclaw" } }).dig(:result, :structuredContent)
+          second_deploy = dispatch(server, "tools/call", { "name" => "blink_deploy", "arguments" => { "service" => "fixture-bearclaw" } }).dig(:result, :structuredContent)
           assert_equal true, second_deploy["success"]
-          assert_equal "bearclaw", second_deploy.dig("data", "service")
+          assert_equal "fixture-bearclaw", second_deploy.dig("data", "service")
 
           test_result = dispatch(server, "tools/call", { "name" => "blink_test", "arguments" => {} }).dig(:result, :structuredContent)
           assert_equal true, test_result["success"]
-          assert_equal %w[bearclaw tardigrade], test_result.dig("data", "service_results").keys.sort
-          assert_equal true, test_result.dig("data", "service_results", "bearclaw", "success")
-          assert_equal true, test_result.dig("data", "service_results", "tardigrade", "success")
+          assert_equal %w[bearclaw fixture-tardigrade], test_result.dig("data", "service_results").keys.sort
+          assert_equal true, test_result.dig("data", "service_results", "fixture-bearclaw", "success")
+          assert_equal true, test_result.dig("data", "service_results", "fixture-tardigrade", "success")
         end
       end
     end
