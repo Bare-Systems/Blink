@@ -9,6 +9,7 @@ module Blink
         @argv    = argv.dup
         @list    = !!@argv.delete("--list")
         @json    = !!@argv.delete("--json")
+        @task    = !!@argv.delete("--task")
 
         target_idx = @argv.index("--target")
         @target_name = if target_idx
@@ -61,6 +62,36 @@ module Blink
           return
         end
 
+        if @task
+          task_manager = TaskManager.new
+          task = task_manager.submit(tool: "blink_test", service: @service || "(all)")
+          task_manager.run_task(task) do
+            run_result = operation.run
+            result = run_result[:result]
+            {
+              success:  result.success?,
+              summary:  summary_for(result),
+              data:     result.to_h.merge(service: @service, target: run_result[:target], service_results: run_result[:service_results])
+            }
+          end
+
+          if @json
+            puts Response.dump(
+              success: true,
+              summary: "Task #{task.id} submitted (blink_test #{@service || "(all)"}). Poll blink_task_status to track progress.",
+              details: { task_id: task.id, tool: "blink_test", service: @service, status: "pending" },
+              next_steps: ["Poll `blink task-status #{task.id}` to track progress."]
+            )
+          else
+            Output.info("Task #{task.id} submitted — test running in background.")
+            Output.info("Poll with:  blink task-status #{task.id}")
+          end
+
+          task.thread&.join
+          exit(task.completed? ? 0 : 1)
+          return
+        end
+
         run = operation.run
         result = run[:result]
         if @json
@@ -90,11 +121,12 @@ module Blink
 
       private
       def show_help
-        puts "#{Output::BOLD}Usage:#{Output::RESET}  blink test [service] [@tag ...] [--list] [--target NAME] [--json]\n\n"
+        puts "#{Output::BOLD}Usage:#{Output::RESET}  blink test [service] [@tag ...] [--list] [--target NAME] [--task] [--json]\n\n"
         puts "  service      Only run suites for this service (default: all)"
         puts "  @tag         Filter tests by tag (e.g. @smoke @health)"
         puts "  --list       Show available tests without running them"
         puts "  --target     Override the target to run tests against"
+        puts "  --task       Run in background and return a task handle (useful for long-running suites)"
         puts "  --json       Emit machine-readable JSON results"
         puts
         puts "Declarative inline tests live under [services.<name>.verify.tests.*] and support `api` and `ui` patterns alongside Ruby suites."
