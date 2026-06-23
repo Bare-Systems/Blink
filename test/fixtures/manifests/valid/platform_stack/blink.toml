@@ -12,60 +12,60 @@ BEARCLAW_TOKEN = "${BLINK_BEARCLAW_TOKEN}"
 description = "Tardigrade edge gateway fixture"
 health_base = "http://127.0.0.1:__PORT__"
 
-[services.tardigrade.source]
+[services.fixture-tardigrade.source]
 type = "local_build"
 workdir = "."
 command = "mkdir -p bin && cp artifacts/tardigrade.bin bin/tardigrade"
 artifact = "bin/tardigrade"
 
-[services.tardigrade.deploy]
+[services.fixture-tardigrade.deploy]
 target = "local"
 priority = 20
 pipeline = ["fetch_artifact", "verify"]
 rollback_pipeline = ["stop", "start"]
 
-[services.tardigrade.health_check]
+[services.fixture-tardigrade.health_check]
 url = "{{health_base}}/fixture-tardigrade/health"
 
-[services.tardigrade.verify.tests.binary]
+[services.fixture-tardigrade.verify.tests.binary]
 type = "shell"
 command = "test -f bin/tardigrade && echo ok"
 expect_output = "ok"
 tags = ["smoke"]
 
-[services.tardigrade.stop]
+[services.fixture-tardigrade.stop]
 command = "true"
 
-[services.tardigrade.start]
+[services.fixture-tardigrade.start]
 command = "true"
 
 [services.fixture-bearclaw]
 description = "BearClaw gateway fixture"
 health_base = "http://127.0.0.1:__PORT__"
 
-[services.bearclaw.source]
+[services.fixture-bearclaw.source]
 type = "local_build"
 workdir = "."
 command = "mkdir -p bin && cp artifacts/bearclaw.bin bin/bearclaw"
 artifact = "bin/bearclaw"
 
-[services.bearclaw.deploy]
+[services.fixture-bearclaw.deploy]
 target = "local"
 priority = 10
 pipeline = ["fetch_artifact", "verify"]
 rollback_pipeline = ["stop", "start"]
 
-[services.bearclaw.health_check]
+[services.fixture-bearclaw.health_check]
 url = "{{health_base}}/fixture-bearclaw/health"
 
-[services.bearclaw.verify.tests.binary]
+[services.fixture-bearclaw.verify.tests.binary]
 type = "shell"
 command = "test -f bin/bearclaw && echo ok"
 expect_output = "ok"
 tags = ["smoke"]
 
-[services.bearclaw.stop]
+[services.fixture-bearclaw.stop]
 command = "true"
 
-[services.bearclaw.start]
+[services.fixture-bearclaw.start]
 command = "true"
