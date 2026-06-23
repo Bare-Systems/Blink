@@ -90,6 +90,14 @@ class MCPServerTest < BlinkTestCase
     assert build[:inputSchema][:properties].key?(:task), "blink_build missing task parameter"
     deploy = resp[:result][:tools].find { |t| t[:name] == "blink_deploy" }
     assert deploy[:inputSchema][:properties].key?(:task), "blink_deploy missing task parameter"
+    test_tool = resp[:result][:tools].find { |t| t[:name] == "blink_test" }
+    assert test_tool[:inputSchema][:properties].key?(:task), "blink_test missing task parameter"
+  end
+
+  def test_task_status_description_mentions_blink_test
+    resp = dispatch("tools/list")
+    status_tool = resp[:result][:tools].find { |t| t[:name] == "blink_task_status" }
+    assert_match(/blink_test/, status_tool[:description])
   end
 
   def test_redact_args_scrubs_secret_shaped_keys

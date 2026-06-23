@@ -123,10 +123,13 @@ module Blink
         inputSchema: {
           type: "object",
           properties: {
-            service: { type: "string", description: "Service name; omit to run all services" },
-            tags:    { type: "array",  items: { type: "string" }, description: "Filter by tag (e.g. ['smoke', 'health'])" },
-            target:  { type: "string", description: "Override the target to run tests against" },
+            service: { type: "string",  description: "Service name; omit to run all services" },
+            tags:    { type: "array",   items: { type: "string" }, description: "Filter by tag (e.g. ['smoke', 'health'])" },
+            target:  { type: "string",  description: "Override the target to run tests against" },
             list:    { type: "boolean", description: "Return test metadata without running (default: false)" },
+            task:    { type: "boolean", description: "Run asynchronously and return a task handle instead of blocking (default: false). " \
+                                                      "Use this for long-running test suites (e.g. benchmarks) that exceed the MCP timeout. " \
+                                                      "Poll blink_task_status with the returned task_id, or check blink_history after the run completes." },
           },
           required: []
         }
@@ -242,7 +245,8 @@ module Blink
       },
       {
         name: "blink_task_status",
-        description: "Check the status and progress of a background task started with task=true. " \
+        description: "Check the status and progress of a background task started with task=true on " \
+                     "blink_build, blink_deploy, or blink_test. " \
                      "Returns the task state, progress log, and result (if finished). " \
                      "Omit task_id to list all tasks.",
         inputSchema: {
@@ -496,11 +500,12 @@ module Blink
     end
 
     def tool_test(args)
-      service  = args["service"]
-      tags     = Array(args["tags"] || []).map(&:to_sym)
+      service   = args["service"]
+      tags      = Array(args["tags"] || []).map(&:to_sym)
       list_only = args.fetch("list", false)
+      async     = args.fetch("task", false)
 
-      manifest = service ? manifest_for_service(service) : workspace_manifest
+      manifest  = service ? manifest_for_service(service) : workspace_manifest
       operation = Operations::TestRun.new(
         manifest: manifest,
         service_name: service,
@@ -527,22 +532,13 @@ module Blink
         })
       end
 
-      run = operation.run
-      result = run[:result]
-
-      next_step = if result.success?
-        "All tests passed. Deployment is verified."
-      else
-        failed_names = result.records.select { |r| %i[fail error].include?(r.status) }.map(&:name)
-        "#{result.failed + result.errored} test(s) failed: #{failed_names.join(", ")}. Check logs or re-deploy."
+      if async
+        return submit_task("blink_test", service || "(all)") do |task|
+          run_test_sync(service: service, tags: tags, target_name: args["target"], manifest: manifest, task: task)
+        end
       end
 
-      JSON.generate({
-        success:             result.success?,
-        summary:             "#{result.passed}/#{result.total} passed#{result.failed > 0 ? ", #{result.failed} failed" : ""}",
-        suggested_next_step: next_step,
-        data:                result.to_h.merge(manifest: manifest.path, target: run[:target], service: service, service_results: run[:service_results])
-      })
+      run_test_sync(service: service, tags: tags, target_name: args["target"], manifest: manifest)
     end
 
     def tool_status(args)
@@ -944,6 +940,35 @@ module Blink
         summary:             result.summary,
         suggested_next_step: next_step,
         data:                result.to_h.merge(output: output, manifest: manifest.path)
+      }
+      task ? payload : JSON.generate(payload)
+    end
+
+    def run_test_sync(service:, tags:, target_name:, manifest:, task: nil)
+      operation = Operations::TestRun.new(
+        manifest:     manifest,
+        service_name: service,
+        tags:         tags,
+        target_name:  target_name
+      )
+      task&.log("Starting test run for #{service || "(all services)"}#{tags.any? ? " [#{tags.join(", ")}]" : ""}")
+
+      run    = operation.run
+      result = run[:result]
+      task&.log("Test run #{result.success? ? "passed" : "failed"}: #{result.passed}/#{result.total}")
+
+      next_step = if result.success?
+        "All tests passed. Deployment is verified."
+      else
+        failed_names = result.records.select { |r| %i[fail error].include?(r.status) }.map(&:name)
+        "#{result.failed + result.errored} test(s) failed: #{failed_names.join(", ")}. Check logs or re-deploy."
+      end
+
+      payload = {
+        success:             result.success?,
+        summary:             "#{result.passed}/#{result.total} passed#{result.failed > 0 ? ", #{result.failed} failed" : ""}",
+        suggested_next_step: next_step,
+        data:                result.to_h.merge(manifest: manifest.path, target: run[:target], service: service, service_results: run[:service_results])
       }
       task ? payload : JSON.generate(payload)
     end
